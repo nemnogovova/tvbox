@@ -49,7 +49,7 @@
     "better-sqlite3": "^12.2.0",
     "qrcode": "^1.5.4",
     "socket.io-client": "^4.7.5",
-    "webtorrent": "^2.4.6"
+    "webtorrent": "1.9.7"
   },
   "devDependencies": {
     "@tvbox/shared": "1.0.0",
