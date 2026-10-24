@@ -8,21 +8,51 @@
     "dev:renderer": "vite",
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && electron .",
     "build:renderer": "vite build",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:electron": "node electron/build.mjs",
     "build": "npm run build:renderer && npm run build:electron",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
     "start": "electron .",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "dist:win": "npm run build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.nemnogovova.tvbox",
+    "productName": "TVBox",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   },
   "dependencies": {
-    "@tvbox/shared": "1.0.0",
     "better-sqlite3": "^12.2.0",
     "qrcode": "^1.5.4",
     "socket.io-client": "^4.7.5",
     "webtorrent": "^2.4.6"
   },
   "devDependencies": {
+    "@tvbox/shared": "1.0.0",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.8.0",
     "@types/qrcode": "^1.5.5",
@@ -31,8 +61,10 @@
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.0.1",
-    "electron": "^31.6.0",
+    "electron": "31.7.7",
+    "electron-builder": "^25.1.8",
     "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.21.5",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",

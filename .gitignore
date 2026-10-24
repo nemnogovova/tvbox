@@ -16,3 +16,9 @@ apps/tv-client/out/
 apps/tv-client/release/
 coverage/
 *.tsbuildinfo
+
+# Android SDK / machine-specific
+apps/remote-client/android/local.properties
+apps/remote-client/android/app/src/main/assets/
+*.apk
+*.aab
