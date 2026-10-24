@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #050507;
+  color: #e8e8f0;
+  overflow: hidden;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  cursor: default;
+}
+body.idle-cursor {
+  cursor: none;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}

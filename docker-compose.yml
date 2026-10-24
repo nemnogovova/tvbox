@@ -1,0 +1,48 @@
+services:
+  backend:
+    build: .
+    container_name: tvbox-backend
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      OWNER_EMAIL: ${OWNER_EMAIL}
+      DEVICE_TOKEN: ${DEVICE_TOKEN}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      DATA_DIR: /data
+      STATIC_DIR: /app/apps/remote-client/dist
+    volumes:
+      - tvbox-data:/data
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
+    networks:
+      - tvbox
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tvbox-caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-tv.nemnogovova.com}
+      UPSTREAM: backend:3000
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - tvbox
+
+volumes:
+  tvbox-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  tvbox:

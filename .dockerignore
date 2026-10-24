@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.env
+apps/tv-client
+apps/remote-client/android
+apps/remote-client/dev-dist
+deploy
+*.log
