@@ -25,11 +25,12 @@ import {
   type PowerAction,
   type MetadataUpdatePayload,
 } from '@tvbox/shared';
-import { SERVER_URL } from '../lib/config';
+import { getServerUrl, saveServerUrl } from '../lib/config';
 
 export interface StoreValue {
   connected: boolean;
   connecting: boolean;
+  serverUrl: string;
   user: User | null;
   authError: string | null;
   presence: PresenceInfo;
@@ -43,6 +44,7 @@ export interface StoreValue {
   fsResult: FsListResult | null;
   socket: Socket | null;
 
+  connectTo: (url: string) => void;
   signIn: (idToken: string) => void;
   signOut: () => void;
   control: (cmd: ControlCommand) => void;
@@ -76,6 +78,7 @@ const defaultPlayer: PlayerState = {
 const StoreContext = createContext<StoreValue | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
+  const [serverUrl, setServerUrl] = useState<string>(() => getServerUrl());
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
   const [user, setUser] = useState<User | null>(null);
@@ -97,7 +100,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    const socket = io(SERVER_URL, {
+    const socket = io(serverUrl, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
@@ -164,6 +167,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       socket.disconnect();
       socketRef.current = null;
     };
+  }, [serverUrl]);
+
+  const connectTo = useCallback((url: string) => {
+    const normalized = saveServerUrl(url);
+    setConnecting(true);
+    setUser(null);
+    setAuthError(null);
+    setServerUrl(normalized);
   }, []);
 
   const emit = useCallback((event: string, payload?: unknown) => {
@@ -189,6 +200,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value: StoreValue = {
     connected,
     connecting,
+    serverUrl,
     user,
     authError,
     presence,
@@ -201,6 +213,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     idleSettings,
     fsResult,
     socket: socketRef.current,
+    connectTo,
     signIn,
     signOut,
     control: (cmd) => emit(Events.CONTROL, cmd),

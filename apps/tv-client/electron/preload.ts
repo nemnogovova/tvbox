@@ -9,14 +9,29 @@ export interface PlayTarget {
   mediaId?: string;
 }
 
-export interface TvInfo {
-  streamPort: number;
+export interface TvSettings {
   backendUrl: string;
+  deviceToken: string;
+  tmdbApiKey: string;
+  mediaDirs: string[];
+}
+
+export interface TvInfo extends TvSettings {
+  streamPort: number;
+  configured: boolean;
+}
+
+export interface TestResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface TvBoxApi {
   getInfo: () => Promise<TvInfo>;
   getCatalog: () => Promise<MediaItem[]>;
+  saveSettings: (s: TvSettings) => Promise<{ ok: boolean; configured: boolean }>;
+  testConnection: (backendUrl: string, deviceToken: string) => Promise<TestResult>;
+  pickDirectory: () => Promise<string[]>;
   sendPlayerState: (state: PlayerState) => void;
   sendProgress: (p: { mediaId: string; position: number; duration: number }) => void;
   signalReply: (event: string, msg: SignalMessage) => void;
@@ -30,6 +45,9 @@ export interface TvBoxApi {
 const api: TvBoxApi = {
   getInfo: () => ipcRenderer.invoke('tv:getInfo'),
   getCatalog: () => ipcRenderer.invoke('tv:getCatalog'),
+  saveSettings: (s) => ipcRenderer.invoke('tv:saveConfig', s),
+  testConnection: (url, token) => ipcRenderer.invoke('tv:testConnection', url, token),
+  pickDirectory: () => ipcRenderer.invoke('tv:pickDirectory'),
   sendPlayerState: (state) => ipcRenderer.send('tv:playerState', state),
   sendProgress: (p) => ipcRenderer.send('tv:progress', p),
   signalReply: (event, msg) => ipcRenderer.send('tv:signal-reply', { event, msg }),

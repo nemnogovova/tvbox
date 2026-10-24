@@ -100,6 +100,13 @@ export class TvSocketClient {
   emitSignal(event: string, msg: SignalMessage): void {
     this.socket?.emit(event, msg);
   }
+  reconnect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    this.connect();
+  }
   isConnected(): boolean {
     return this.connected;
   }

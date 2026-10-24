@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ControlCommand, IdleSettings, MediaItem, PlayerState, WidgetConfig } from '@tvbox/shared';
-import type { PlayTarget } from './types';
+import type { PlayTarget, TvInfo } from './types';
 import { IdleScreen } from './components/IdleScreen';
 import { PlayerOverlay, type PlayerApi } from './components/PlayerOverlay';
+import { SetupScreen } from './components/SetupScreen';
 import { useWebrtcReceiver } from './hooks/useWebrtcReceiver';
+import { Settings } from 'lucide-react';
 
 const DEFAULT_STATE: PlayerState = {
   source: 'none',
@@ -35,6 +37,8 @@ export default function App() {
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
   const [backendUrl, setBackendUrl] = useState('http://localhost:3000');
   const [screensaver, setScreensaver] = useState(false);
+  const [info, setInfo] = useState<TvInfo | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
 
   const playerRef = useRef<PlayerApi>(null);
   const mediaIdRef = useRef<string | undefined>(undefined);
@@ -83,7 +87,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void window.tvbox.getInfo().then((i) => setBackendUrl(i.backendUrl));
+    void window.tvbox.getInfo().then((i) => {
+      setInfo(i);
+      setBackendUrl(i.backendUrl);
+      if (!i.configured) setShowSetup(true);
+    });
     void window.tvbox.getCatalog().then(setCatalog);
     window.tvbox.requestWidgets();
 
@@ -162,6 +170,23 @@ export default function App() {
     };
   }, [mode, idle.screensaver, idle.screensaverDelayMs]);
 
+  if (showSetup) {
+    return (
+      <SetupScreen
+        initial={info}
+        onDone={() => {
+          setShowSetup(false);
+          void window.tvbox.getInfo().then((i) => {
+            setInfo(i);
+            setBackendUrl(i.backendUrl);
+          });
+          void window.tvbox.getCatalog().then(setCatalog);
+          setMode('idle');
+        }}
+      />
+    );
+  }
+
   if (mode === 'player') {
     if (webrtc.active && webrtc.stream) {
       return (
@@ -191,7 +216,18 @@ export default function App() {
     return <Screensaver kind={idle.screensaver} />;
   }
 
-  return <IdleScreen settings={{ ...idle, widgets }} catalog={catalog} backendUrl={backendUrl} />;
+  return (
+    <div className="w-full h-full relative">
+      <IdleScreen settings={{ ...idle, widgets }} catalog={catalog} backendUrl={backendUrl} />
+      <button
+        onClick={() => setShowSetup(true)}
+        className="absolute bottom-5 right-5 w-11 h-11 rounded-full bg-surface/80 border border-line text-gray-400 hover:text-white flex items-center justify-center"
+        title="Настройки"
+      >
+        <Settings size={20} />
+      </button>
+    </div>
+  );
 }
 
 function Screensaver({ kind }: { kind: 'black' | 'clock' | 'wallpaper' }) {

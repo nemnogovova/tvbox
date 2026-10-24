@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useStore, useIsOwner } from '../store/store';
 import type { PowerAction, WidgetConfig } from '@tvbox/shared';
-import { Power, Moon, RotateCw, Plus, Trash2, User, Shield, Tv } from 'lucide-react';
+import { Power, Moon, RotateCw, Plus, Trash2, User, Shield, Tv, Server, Loader2 } from 'lucide-react';
 
 export function SettingsPage() {
-  const { user, signOut, presence, guests, dictatorMode, setDictatorMode, updateGuests, sendPower, widgets, idleSettings, updateWidgets } =
+  const { user, signOut, presence, guests, dictatorMode, setDictatorMode, updateGuests, sendPower, widgets, idleSettings, updateWidgets, serverUrl, connectTo, connected } =
     useStore();
   const isOwner = useIsOwner();
   const [email, setEmail] = useState('');
+  const [urlInput, setUrlInput] = useState(serverUrl);
   const { socket } = useStore();
 
   useEffect(() => {
@@ -23,9 +24,35 @@ export function SettingsPage() {
     setEmail('');
   };
 
+  const applyUrl = () => {
+    if (urlInput.trim()) connectTo(urlInput.trim());
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-semibold">Настройки</h1>
+
+      {/* Server */}
+      <section className="card p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <Server size={16} className="text-accent" />
+          <h2 className="font-medium">Сервер</h2>
+          <span className={`ml-auto text-xs flex items-center gap-1.5 ${connected ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {connected ? '● Подключено' : 'Переподключение…'}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            placeholder="https://tv.nemnogovova.com"
+            className="flex-1 bg-raised border border-line rounded-xl px-3 py-2.5 text-sm outline-none focus:border-accent"
+          />
+          <button onClick={applyUrl} className="btn-primary !px-4">
+            {!connected ? <Loader2 size={16} className="animate-spin" /> : 'Подключить'}
+          </button>
+        </div>
+      </section>
 
       {/* Account */}
       <section className="card p-5 flex items-center gap-4">

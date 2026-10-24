@@ -19,7 +19,11 @@ export interface TmdbSearchResult {
 }
 
 export class TmdbClient {
-  constructor(private readonly apiKey: string) {}
+  constructor(private apiKey: string) {}
+
+  setApiKey(key: string): void {
+    this.apiKey = key;
+  }
 
   private async get<T>(path: string, params: Record<string, string>): Promise<T> {
     const url = new URL(`${TMDB_BASE}${path}`);

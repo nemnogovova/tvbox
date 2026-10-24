@@ -1,7 +1,9 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'node:path';
 import type { PlayerState, SignalMessage, IdleSettings, WidgetConfig } from '@tvbox/shared';
-import { loadTvConfig } from './core/config';
+import { io as ioClient } from 'socket.io-client';
+import { Events } from '@tvbox/shared';
+import { loadTvConfig, isConfigured, saveConfigFile, type TvClientSettings } from './core/config';
 import { TvDatabase } from './core/db';
 import { TmdbClient } from './core/tmdb';
 import { TorrentEngine } from './core/torrents';
@@ -11,7 +13,7 @@ import { TvSocketClient } from './core/socket';
 import { listDirectory } from './core/filesystem';
 import { powerAction, setSystemMuted, setSystemVolume } from './core/system';
 
-const config = loadTvConfig();
+let config = loadTvConfig();
 const db = new TvDatabase(config.dataDir);
 const tmdb = new TmdbClient(config.tmdbApiKey);
 const torrents = new TorrentEngine({ downloadDir: path.join(config.dataDir, 'downloads') });
@@ -216,8 +218,73 @@ function createWindow(): void {
 ipcMain.handle('tv:getInfo', () => ({
   streamPort: config.streamPort,
   backendUrl: config.backendUrl,
+  deviceToken: config.deviceToken,
+  tmdbApiKey: config.tmdbApiKey,
+  mediaDirs: config.mediaDirs,
+  configured: isConfigured(config),
 }));
 ipcMain.handle('tv:getCatalog', () => media.list());
+
+ipcMain.handle('tv:saveConfig', async (_e, settings: TvClientSettings) => {
+  config.backendUrl = (settings.backendUrl || '').replace(/\/$/, '');
+  config.deviceToken = (settings.deviceToken || '').trim();
+  config.tmdbApiKey = (settings.tmdbApiKey || '').trim();
+  config.mediaDirs = (settings.mediaDirs || []).map((d) => d.trim()).filter(Boolean);
+
+  saveConfigFile(config.dataDir, {
+    backendUrl: config.backendUrl,
+    deviceToken: config.deviceToken,
+    tmdbApiKey: config.tmdbApiKey,
+    mediaDirs: config.mediaDirs,
+  });
+
+  tmdb.setApiKey(config.tmdbApiKey);
+  if (isConfigured(config)) {
+    socket.reconnect();
+  }
+  media.scanLocal();
+  return { ok: true, configured: isConfigured(config) };
+});
+
+ipcMain.handle('tv:testConnection', async (_e, backendUrl: string, deviceToken: string) => {
+  const url = (backendUrl || '').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${url}/api/health`);
+    if (!res.ok) {
+      return { ok: false, message: `Server responded with HTTP ${res.status}` };
+    }
+  } catch {
+    return { ok: false, message: 'Server is unreachable. Check the address.' };
+  }
+
+  return await new Promise((resolve) => {
+    const s = ioClient(url, { transports: ['websocket', 'polling'], timeout: 8000 });
+    const finish = (ok: boolean, message: string) => {
+      s.close();
+      resolve({ ok, message });
+    };
+    const timer = setTimeout(() => finish(false, 'Device token rejected (or server took too long).'), 9000);
+    s.on('connect', () => {
+      s.emit(Events.AUTH, { deviceToken });
+    });
+    s.on(Events.AUTH_RESULT, (res: { ok: boolean; error?: string }) => {
+      clearTimeout(timer);
+      if (res.ok) finish(true, 'Connected and authenticated.');
+      else finish(false, res.error || 'Device token rejected.');
+    });
+    s.on('connect_error', (e: Error) => {
+      clearTimeout(timer);
+      finish(false, `Connection error: ${e.message}`);
+    });
+  });
+});
+
+ipcMain.handle('tv:pickDirectory', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openDirectory', 'multiSelections'],
+  });
+  return result.canceled ? [] : result.filePaths;
+});
 ipcMain.on('tv:playerState', (_e, state: PlayerState) => {
   socket.emitState(state);
 });
@@ -233,7 +300,9 @@ ipcMain.on('tv:widgets-get', () => {
 
 app.whenReady().then(() => {
   media.scanLocal();
-  socket.connect();
+  if (isConfigured(config)) {
+    socket.connect();
+  }
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
