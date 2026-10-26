@@ -1,0 +1,77 @@
+services:
+  backend:
+    build: .
+    container_name: tvbox-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      STATIC_DIR: /app/public
+      PORT: "3000"
+    volumes:
+      - tvbox-data:/data
+    mem_limit: 600m
+    pids_limit: 256
+    expose:
+      - "3000"
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tvbox-caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-tv.nemnogovova.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+  # TURN relay for WebRTC casting when phone and TV are behind strict NATs.
+  # Bandwidth is capped per session to protect the 500 GB/month traffic quota.
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: tvbox-coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=${DOMAIN:-tv.nemnogovova.com}
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --no-multicast-peers
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --max-bps=4000000
+      - --total-quota=20
+      - --stale-nonce=600
+    mem_limit: 96m
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+volumes:
+  tvbox-data:
+  caddy-data:
+  caddy-config:

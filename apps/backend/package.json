@@ -1,6 +1,6 @@
 {
   "name": "@tvbox/backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
@@ -11,17 +11,16 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@tvbox/shared": "1.0.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "google-auth-library": "^9.14.1",
-    "socket.io": "^4.7.5"
+    "@tvbox/shared": "2.0.0",
+    "express": "^4.21.1",
+    "google-auth-library": "^9.14.2",
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.8.0",
     "@types/supertest": "^6.0.2",
-    "socket.io-client": "^4.7.5",
+    "socket.io-client": "^4.8.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",

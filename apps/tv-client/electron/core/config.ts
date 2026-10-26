@@ -1,75 +1,69 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+import { DEFAULT_SERVER_URL, type TvSettings } from '@tvbox/shared';
 
-export interface TvClientConfig {
-  backendUrl: string;
-  deviceToken: string;
-  tmdbApiKey: string;
-  mediaDirs: string[];
-  streamPort: number;
-  dataDir: string;
+export interface TvConfig extends TvSettings {
+  serverUrl: string;
+  /** Session token issued by the backend after QR pairing */
+  token: string;
+  tvName: string;
 }
 
-export interface TvClientSettings {
-  backendUrl: string;
-  deviceToken: string;
-  tmdbApiKey: string;
-  mediaDirs: string[];
+export function dataDir(): string {
+  return process.env.TVBOX_DATA_DIR || path.join(os.homedir(), '.tvbox');
 }
 
-const defaultDataDir = path.join(os.homedir(), '.tvbox');
-
-export function getDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.DATA_DIR || defaultDataDir;
-}
-
-export function loadTvConfig(env: NodeJS.ProcessEnv = process.env): TvClientConfig {
-  const dataDir = getDataDir(env);
-  const file = readConfigFile(dataDir);
-
-  const envMediaDirs = (env.MEDIA_DIRS || '')
-    .split(',')
-    .map((d) => d.trim())
-    .filter(Boolean);
-
+function defaults(): TvConfig {
   return {
-    backendUrl: (file.backendUrl || env.BACKEND_URL || 'http://localhost:3000').replace(/\/$/, ''),
-    deviceToken: file.deviceToken || env.DEVICE_TOKEN || '',
-    tmdbApiKey: file.tmdbApiKey || env.TMDB_API_KEY || '',
-    mediaDirs: file.mediaDirs && file.mediaDirs.length > 0 ? file.mediaDirs : envMediaDirs,
-    streamPort: Number(env.STREAM_PORT || 8765),
-    dataDir,
+    serverUrl: DEFAULT_SERVER_URL,
+    token: '',
+    tvName: os.hostname() || 'Телевизор',
+    tmdbApiKey: '',
+    mediaDirs: [],
+    downloadDir: path.join(os.homedir(), 'Videos', 'TVBox'),
+    autostart: true,
+    language: 'ru-RU',
   };
 }
 
-export function isConfigured(cfg: TvClientConfig): boolean {
-  return Boolean(cfg.backendUrl && cfg.deviceToken);
-}
+export class ConfigStore {
+  private readonly file: string;
+  value: TvConfig;
 
-export function saveConfigFile(dataDir: string, settings: TvClientSettings): void {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const payload = {
-    backendUrl: settings.backendUrl.replace(/\/$/, ''),
-    deviceToken: settings.deviceToken.trim(),
-    tmdbApiKey: settings.tmdbApiKey.trim(),
-    mediaDirs: settings.mediaDirs.map((d) => d.trim()).filter(Boolean),
-  };
-  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(payload, null, 2), 'utf-8');
-}
+  constructor(dir = dataDir()) {
+    fs.mkdirSync(dir, { recursive: true });
+    this.file = path.join(dir, 'config.json');
+    this.value = this.read();
+  }
 
-function readConfigFile(dataDir: string): Partial<TvClientSettings> {
-  try {
-    const file = path.join(dataDir, 'config.json');
-    if (!fs.existsSync(file)) return {};
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<TvClientSettings>;
-    return {
-      backendUrl: typeof parsed.backendUrl === 'string' ? parsed.backendUrl : undefined,
-      deviceToken: typeof parsed.deviceToken === 'string' ? parsed.deviceToken : undefined,
-      tmdbApiKey: typeof parsed.tmdbApiKey === 'string' ? parsed.tmdbApiKey : undefined,
-      mediaDirs: Array.isArray(parsed.mediaDirs) ? parsed.mediaDirs : undefined,
-    };
-  } catch {
-    return {};
+  private read(): TvConfig {
+    const d = defaults();
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.file, 'utf-8')) as Partial<TvConfig> & { backendUrl?: string };
+      return {
+        ...d,
+        ...Object.fromEntries(Object.entries(raw).filter(([k, v]) => k in d && v !== undefined && v !== null)),
+        serverUrl: String(raw.serverUrl || raw.backendUrl || d.serverUrl).replace(/\/$/, ''),
+        mediaDirs: Array.isArray(raw.mediaDirs) ? raw.mediaDirs.filter((x) => typeof x === 'string') : d.mediaDirs,
+      } as TvConfig;
+    } catch {
+      return d;
+    }
+  }
+
+  update(patch: Partial<TvConfig>): TvConfig {
+    this.value = { ...this.value, ...patch };
+    if (patch.serverUrl) this.value.serverUrl = patch.serverUrl.trim().replace(/\/$/, '');
+    if (patch.mediaDirs) this.value.mediaDirs = Array.from(new Set(patch.mediaDirs.map((d) => d.trim()).filter(Boolean)));
+    const tmp = `${this.file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.value, null, 2), 'utf-8');
+    fs.renameSync(tmp, this.file);
+    return this.value;
+  }
+
+  settings(): TvSettings {
+    const { tmdbApiKey, mediaDirs, downloadDir, autostart, language } = this.value;
+    return { tmdbApiKey, mediaDirs, downloadDir, autostart, language };
   }
 }

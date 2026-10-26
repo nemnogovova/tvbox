@@ -1,94 +1,170 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { Camera, FileVideo, ImagePlus, MonitorUp, Radio, Square, SwitchCamera } from 'lucide-react';
 import { useStore } from '../store/store';
-import { castFile, castScreen, castWebcam, type ActiveCast } from '../lib/webrtc';
-import { MonitorUp, Camera, FileVideo, Square } from 'lucide-react';
+import { startCameraCast, startFileCast, startScreenCast, stopCast, useCast } from '../store/cast';
+import { Spinner, cx } from '../components/ui';
+
+const canScreen = () => typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
 export function CastPage() {
-  const { socket, presence } = useStore();
-  const [active, setActive] = useState<ActiveCast | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const tvOnline = useStore((s) => s.presence.tvConnected);
+  const { session, status, busy } = useCast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
+  const mediaHost = useRef<HTMLDivElement>(null);
 
-  const canCast = !!socket && presence.tvConnected;
+  useEffect(() => {
+    const host = mediaHost.current;
+    const el = session?.media;
+    if (!host || !el) return;
+    el.className = 'w-full max-h-[50vh] rounded-2xl bg-black';
+    host.appendChild(el);
+    return () => {
+      if (el.parentElement === host) host.removeChild(el);
+    };
+  }, [session]);
 
-  const start = async (fn: () => Promise<ActiveCast>) => {
-    if (active) active.close();
-    try {
-      const cast = await fn();
-      setActive(cast);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const stop = () => {
-    active?.close();
-    setActive(null);
-  };
+  const disabled = !tvOnline || busy;
 
   return (
     <div className="flex flex-col gap-5">
-      <h1 className="text-xl font-semibold">Кастинг</h1>
-      <p className="text-sm text-gray-500 -mt-3">
-        Stream your screen, camera or a media file directly to the TV over WebRTC (P2P, no server storage).
-      </p>
-
-      <input
-        ref={fileInput}
-        type="file"
-        accept="video/*,audio/*,image/*"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) start(() => castFile(socket!, f));
-          e.target.value = '';
-        }}
-      />
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <button
-          onClick={() => fileInput.current?.click()}
-          disabled={!canCast}
-          className="card p-6 flex flex-col items-center gap-3 hover:border-accent/50 transition-colors disabled:opacity-40"
-        >
-          <FileVideo size={28} className="text-accent" />
-          <span className="font-medium">Cast a file</span>
-          <span className="text-xs text-gray-500">Video / audio / photo</span>
-        </button>
-        <button
-          onClick={() => start(() => castScreen(socket!))}
-          disabled={!canCast}
-          className="card p-6 flex flex-col items-center gap-3 hover:border-accent/50 transition-colors disabled:opacity-40"
-        >
-          <MonitorUp size={28} className="text-accent2" />
-          <span className="font-medium">Share screen</span>
-          <span className="text-xs text-gray-500">Mirror your desktop</span>
-        </button>
-        <button
-          onClick={() => start(() => castWebcam(socket!))}
-          disabled={!canCast}
-          className="card p-6 flex flex-col items-center gap-3 hover:border-accent/50 transition-colors disabled:opacity-40"
-        >
-          <Camera size={28} className="text-emerald-400" />
-          <span className="font-medium">Camera</span>
-          <span className="text-xs text-gray-500">Live webcam feed</span>
-        </button>
+      <div>
+        <h1 className="h-page">Трансляция</h1>
+        <p className="mt-1 text-sm text-fg-muted">Напрямую на телевизор по WebRTC — без загрузки на сервер.</p>
       </div>
 
-      {active && (
-        <div className="card p-4 flex items-center justify-between">
-          <div>
-            <p className="font-medium text-sm">Casting: {active.label}</p>
-            <p className="text-xs text-gray-500">{active.kind}</p>
+      {session && (
+        <div className="panel overflow-hidden">
+          <div className="flex items-center gap-3 p-4">
+            <div className={cx('flex h-11 w-11 items-center justify-center rounded-2xl', status === 'live' ? 'bg-ember/15 text-ember' : 'bg-ink-750 text-fg-muted')}>
+              {status === 'live' ? <Radio size={20} className="animate-pulse-dot" /> : <Spinner />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="label">{status === 'live' ? 'В эфире' : 'Подключаемся…'}</div>
+              <div className="truncate text-sm font-bold">{session.label}</div>
+            </div>
+            <button className="btn-danger" onClick={stopCast}>
+              <Square size={15} fill="currentColor" /> Стоп
+            </button>
           </div>
-          <button onClick={stop} className="btn-danger">
-            <Square size={16} /> Stop
-          </button>
+          {session.media && <div ref={mediaHost} className="px-4 pb-4" />}
+          {session.kind === 'image' && (
+            <div className="px-4 pb-4">
+              <button className="btn-soft w-full" onClick={() => photoRef.current?.click()}>
+                <ImagePlus size={16} /> Показать другое фото
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {!canCast && (
-        <p className="text-sm text-amber-400">TV is offline — cannot cast right now.</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <CastTile
+          icon={<FileVideo size={26} />}
+          title="Видео или музыка"
+          text="Файл с этого устройства"
+          disabled={disabled}
+          onClick={() => fileRef.current?.click()}
+        />
+        <CastTile
+          icon={<ImagePlus size={26} />}
+          title="Фото"
+          text="Без потери качества"
+          disabled={disabled}
+          onClick={() => photoRef.current?.click()}
+        />
+        <CastTile
+          icon={<MonitorUp size={26} />}
+          title="Экран"
+          text={canScreen() ? 'Окно, вкладку или весь экран' : 'Доступно в браузере на ПК'}
+          disabled={disabled || !canScreen()}
+          onClick={() => void startScreenCast()}
+        />
+        <CastTile
+          icon={<Camera size={26} />}
+          title="Камера"
+          text="Прямой эфир с камеры"
+          disabled={disabled}
+          onClick={() => void startCameraCast('environment')}
+          extra={
+            <button
+              className="icon-btn h-9 w-9"
+              disabled={disabled}
+              onClick={(e) => {
+                e.stopPropagation();
+                void startCameraCast('user');
+              }}
+              title="Фронтальная камера"
+            >
+              <SwitchCamera size={16} />
+            </button>
+          }
+        />
+      </div>
+
+      {!tvOnline && <p className="text-center text-sm text-warn">Телевизор не в сети — трансляция недоступна.</p>}
+      <p className="text-center text-xs leading-relaxed text-fg-dim">
+        Совет: на компьютере можно просто перетащить файл в окно пульта.
+      </p>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="video/*,audio/*"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void startFileCast(f);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={photoRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void startFileCast(f);
+          e.target.value = '';
+        }}
+      />
+    </div>
+  );
+}
+
+function CastTile({
+  icon,
+  title,
+  text,
+  onClick,
+  disabled,
+  extra,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  text: string;
+  onClick: () => void;
+  disabled?: boolean;
+  extra?: React.ReactNode;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => !disabled && onClick()}
+      onKeyDown={(e) => e.key === 'Enter' && !disabled && onClick()}
+      className={cx(
+        'panel group flex cursor-pointer items-center gap-4 p-5 transition hover:border-ember/40 active:scale-[0.99]',
+        disabled && 'pointer-events-none opacity-40',
       )}
+    >
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-750 text-ember transition group-hover:bg-ember group-hover:text-ink-950">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="font-bold">{title}</div>
+        <div className="text-sm text-fg-muted">{text}</div>
+      </div>
+      {extra}
     </div>
   );
 }

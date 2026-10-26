@@ -3,7 +3,7 @@ export * from './events';
 export * from './commands';
 export * from './roles';
 export * from './torrent-parse';
+export * from './util';
 
 export const APP_NAME = 'TVBox';
-export const DEFAULT_PORT = 3000;
-export const DEVICE_TOKEN_HEADER = 'x-device-token';
+export const DEFAULT_SERVER_URL = 'https://tv.nemnogovova.com';

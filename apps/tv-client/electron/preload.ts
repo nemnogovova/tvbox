@@ -1,77 +1,34 @@
-import { contextBridge, ipcRenderer } from 'electron';
-import type { PlayerState, SignalMessage, IdleSettings, WidgetConfig, MediaItem } from '@tvbox/shared';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { TvBridge } from '../src/bridge';
 
-export interface PlayTarget {
-  kind: 'youtube' | 'local' | 'torrent' | 'webrtc';
-  url?: string;
-  videoId?: string;
-  title?: string;
-  mediaId?: string;
+function on<T>(channel: string) {
+  return (cb: (payload: T) => void) => {
+    const handler = (_e: IpcRendererEvent, payload: T) => cb(payload);
+    ipcRenderer.on(channel, handler);
+    return () => {
+      ipcRenderer.removeListener(channel, handler);
+    };
+  };
 }
 
-export interface TvSettings {
-  backendUrl: string;
-  deviceToken: string;
-  tmdbApiKey: string;
-  mediaDirs: string[];
-}
-
-export interface TvInfo extends TvSettings {
-  streamPort: number;
-  configured: boolean;
-}
-
-export interface TestResult {
-  ok: boolean;
-  message: string;
-}
-
-export interface TvBoxApi {
-  getInfo: () => Promise<TvInfo>;
-  getCatalog: () => Promise<MediaItem[]>;
-  saveSettings: (s: TvSettings) => Promise<{ ok: boolean; configured: boolean }>;
-  testConnection: (backendUrl: string, deviceToken: string) => Promise<TestResult>;
-  pickDirectory: () => Promise<string[]>;
-  sendPlayerState: (state: PlayerState) => void;
-  sendProgress: (p: { mediaId: string; position: number; duration: number }) => void;
-  signalReply: (event: string, msg: SignalMessage) => void;
-  requestWidgets: () => void;
-  onControl: (cb: (cmd: unknown) => void) => () => void;
-  onPlay: (cb: (target: PlayTarget) => void) => () => void;
-  onSignal: (cb: (payload: { event: string; msg: SignalMessage }) => void) => () => void;
-  onWidgets: (cb: (payload: { widgets: WidgetConfig[]; settings: IdleSettings }) => void) => () => void;
-}
-
-const api: TvBoxApi = {
-  getInfo: () => ipcRenderer.invoke('tv:getInfo'),
-  getCatalog: () => ipcRenderer.invoke('tv:getCatalog'),
-  saveSettings: (s) => ipcRenderer.invoke('tv:saveConfig', s),
-  testConnection: (url, token) => ipcRenderer.invoke('tv:testConnection', url, token),
-  pickDirectory: () => ipcRenderer.invoke('tv:pickDirectory'),
-  sendPlayerState: (state) => ipcRenderer.send('tv:playerState', state),
-  sendProgress: (p) => ipcRenderer.send('tv:progress', p),
-  signalReply: (event, msg) => ipcRenderer.send('tv:signal-reply', { event, msg }),
-  requestWidgets: () => ipcRenderer.send('tv:widgets-get'),
-  onControl: (cb) => {
-    const handler = (_e: unknown, cmd: unknown) => cb(cmd);
-    ipcRenderer.on('tv:control', handler);
-    return () => ipcRenderer.removeListener('tv:control', handler);
-  },
-  onPlay: (cb) => {
-    const handler = (_e: unknown, target: PlayTarget) => cb(target);
-    ipcRenderer.on('tv:play', handler);
-    return () => ipcRenderer.removeListener('tv:play', handler);
-  },
-  onSignal: (cb) => {
-    const handler = (_e: unknown, payload: { event: string; msg: SignalMessage }) => cb(payload);
-    ipcRenderer.on('tv:signal', handler);
-    return () => ipcRenderer.removeListener('tv:signal', handler);
-  },
-  onWidgets: (cb) => {
-    const handler = (_e: unknown, payload: { widgets: WidgetConfig[]; settings: IdleSettings }) => cb(payload);
-    ipcRenderer.on('tv:widgets', handler);
-    return () => ipcRenderer.removeListener('tv:widgets', handler);
-  },
+const api: TvBridge = {
+  getStatus: () => ipcRenderer.invoke('tv:status'),
+  getCatalog: () => ipcRenderer.invoke('tv:catalog'),
+  getIdle: () => ipcRenderer.invoke('tv:idle'),
+  getIceServers: () => ipcRenderer.invoke('tv:ice'),
+  setServerUrl: (url) => ipcRenderer.invoke('tv:setServer', url),
+  report: (r) => ipcRenderer.send('tv:report', r),
+  castState: (s) => ipcRenderer.send('tv:cast', s),
+  signal: (event, msg) => ipcRenderer.send('tv:signal', { event, msg }),
+  localKey: (key) => ipcRenderer.send('tv:key', key),
+  onStatus: on('tv:status'),
+  onLoad: on('player:load'),
+  onCommand: on('player:cmd'),
+  onCatalog: on('tv:catalog'),
+  onIdle: on('tv:idle'),
+  onSignal: on('tv:signal'),
+  onCastStop: on('cast:stop'),
+  onToast: on('tv:toast'),
 };
 
 contextBridge.exposeInMainWorld('tvbox', api);

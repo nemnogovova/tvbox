@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 
-const external = ['electron', 'better-sqlite3', 'webtorrent', 'socket.io-client', 'qrcode'];
+// Native / asset-carrying packages stay external and are shipped in node_modules.
+const external = ['electron', 'webtorrent', 'sql.js', 'ffmpeg-static', 'bufferutil', 'utf-8-validate', 'utp-native'];
 
 await build({
   entryPoints: ['electron/main.ts', 'electron/preload.ts'],

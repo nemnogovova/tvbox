@@ -1,50 +1,72 @@
-const PROD_DEFAULT = 'https://tv.nemnogovova.com';
-const STORAGE_KEY = 'tvbox.serverUrl';
+import { DEFAULT_SERVER_URL } from '@tvbox/shared';
+import { isNative } from './native';
 
+const SERVER_KEY = 'tvbox.server';
+const TOKEN_KEY = 'tvbox.token';
+
+function lsGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function lsSet(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable
+  }
+}
+
+/** Where the backend lives. On the web it is the page's own origin. */
 export function getServerUrl(): string {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return saved.replace(/\/$/, '');
-  } catch {
-    // ignore
-  }
-  if (import.meta.env.VITE_SERVER_URL) return import.meta.env.VITE_SERVER_URL.replace(/\/$/, '');
-  if (import.meta.env.DEV) return 'http://localhost:3000';
-  if (typeof window !== 'undefined' && window.location.origin.startsWith('http')) {
-    return window.location.origin;
-  }
-  return PROD_DEFAULT;
+  const saved = lsGet(SERVER_KEY);
+  if (saved) return saved;
+  const env = import.meta.env.VITE_SERVER_URL as string | undefined;
+  if (env) return env.replace(/\/$/, '');
+  if (!isNative() && /^https?:/.test(window.location.origin)) return window.location.origin;
+  return DEFAULT_SERVER_URL;
 }
 
-export function saveServerUrl(url: string): string {
-  const normalized = url.trim().replace(/\/$/, '');
-  try {
-    localStorage.setItem(STORAGE_KEY, normalized);
-  } catch {
-    // ignore
-  }
-  return normalized;
+export function setServerUrl(url: string | null): void {
+  lsSet(SERVER_KEY, url ? url.trim().replace(/\/$/, '') : null);
 }
 
-export function clearServerUrl(): void {
+export function canChangeServer(): boolean {
+  return isNative() || Boolean(lsGet(SERVER_KEY));
+}
+
+export const getToken = () => lsGet(TOKEN_KEY);
+export const setToken = (t: string | null) => lsSet(TOKEN_KEY, t);
+
+export function getPref<T>(key: string, fallback: T): T {
+  const v = lsGet(`tvbox.pref.${key}`);
+  if (v === null) return fallback;
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    return JSON.parse(v) as T;
   } catch {
-    // ignore
+    return fallback;
   }
+}
+export function setPref(key: string, value: unknown): void {
+  lsSet(`tvbox.pref.${key}`, JSON.stringify(value));
 }
 
 export interface PublicConfig {
   googleClientId: string;
   oauthConfigured: boolean;
+  publicUrl: string;
+  turn: boolean;
 }
 
-export async function fetchPublicConfig(serverUrl: string): Promise<PublicConfig> {
+export async function fetchPublicConfig(serverUrl: string): Promise<PublicConfig | null> {
   try {
-    const res = await fetch(`${serverUrl}/api/config`);
-    if (!res.ok) return { googleClientId: '', oauthConfigured: false };
+    const res = await fetch(`${serverUrl}/api/config`, { cache: 'no-store' });
+    if (!res.ok) return null;
     return (await res.json()) as PublicConfig;
   } catch {
-    return { googleClientId: '', oauthConfigured: false };
+    return null;
   }
 }

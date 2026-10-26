@@ -1,9 +1,2 @@
-import type { TvBoxApi } from './types';
-
-declare global {
-  interface Window {
-    tvbox: TvBoxApi;
-  }
-}
-
+// Удалено в TVBox 2.0 — этот файл больше не используется и его можно удалить.
 export {};

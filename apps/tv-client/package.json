@@ -1,27 +1,27 @@
 {
   "name": "@tvbox/tv-client",
-  "version": "1.0.0",
+  "version": "3.0.2",
   "private": true,
+  "description": "TVBox — TV client",
+  "author": "nemnogovova",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:renderer": "vite",
-    "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && electron .",
+    "dev": "npm run build:electron && concurrently -k \"vite\" \"wait-on tcp:5174 && cross-env VITE_DEV_SERVER_URL=http://localhost:5174 electron .\"",
     "build:renderer": "vite build",
     "build:electron": "node electron/build.mjs",
     "build": "npm run build:renderer && npm run build:electron",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
     "start": "electron .",
-    "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "dist:win": "npm run build && electron-builder --win --x64"
+    "dist": "npm run build && electron-builder --win --x64 --publish never"
   },
   "build": {
     "appId": "com.nemnogovova.tvbox",
     "productName": "TVBox",
     "npmRebuild": false,
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**/*",
@@ -30,42 +30,52 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "**/node_modules/ffmpeg-static/**/*",
+      "**/node_modules/sql.js/dist/*.wasm"
     ],
     "win": {
       "target": [
         "nsis"
       ],
+      "icon": "build/icon.png",
       "signAndEditExecutable": false
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "artifactName": "TVBox-Setup-${version}.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "TVBox"
     }
   },
   "dependencies": {
-    "better-sqlite3": "^12.2.0",
-    "qrcode": "^1.5.4",
-    "socket.io-client": "^4.7.5",
+    "ffmpeg-static": "^5.2.0",
+    "socket.io-client": "^4.8.1",
+    "sql.js": "^1.12.0",
     "webtorrent": "1.9.7"
   },
   "devDependencies": {
-    "@tvbox/shared": "1.0.0",
-    "@types/better-sqlite3": "^7.6.11",
+    "@fontsource-variable/manrope": "^5.1.0",
+    "@tvbox/shared": "2.0.0",
     "@types/node": "^22.8.0",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
+    "@types/sql.js": "^1.4.9",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
     "electron": "31.7.7",
     "electron-builder": "^25.1.8",
-    "electron-rebuild": "^3.2.9",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.24.0",
+    "lucide-react": "^0.451.0",
     "postcss": "^8.4.47",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
     "vite": "^5.4.9",

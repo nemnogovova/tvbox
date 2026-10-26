@@ -1,148 +1,134 @@
-import type {
-  PlayerState,
-  MediaItem,
-  TorrentInfo,
-  GuestEntry,
-  WidgetConfig,
-  IdleSettings,
-  PowerAction,
-  FsEntry,
-} from './types';
-
-export interface PlayCommand {
-  type: 'PLAY';
-  videoId?: string;
-  mediaId?: string;
-}
-
-export interface PauseCommand {
-  type: 'PAUSE';
-}
-
-export interface ResumeCommand {
-  type: 'RESUME';
-}
-
-export interface SeekCommand {
-  type: 'SEEK';
-  position: number;
-}
-
-export interface VolumeCommand {
-  type: 'VOLUME';
-  volume: number;
-}
-
-export interface MuteCommand {
-  type: 'MUTE';
-  muted: boolean;
-}
-
-export interface FullscreenCommand {
-  type: 'FULLSCREEN';
-  fullscreen: boolean;
-}
-
-export interface PlaySourceCommand {
-  type: 'PLAY_SOURCE';
-  source: 'youtube' | 'local' | 'torrent' | 'webrtc';
-  url?: string;
-  mediaId?: string;
-  videoId?: string;
-  torrentId?: string;
-  title?: string;
-}
-
-export interface StopCommand {
-  type: 'STOP';
-}
+import type { PlayRequest, IdleSettings, MediaItem, PowerAction, RepeatMode, TvSettings, MusicSourceKind, MusicView } from './types';
 
 export type ControlCommand =
-  | PlayCommand
-  | PauseCommand
-  | ResumeCommand
-  | SeekCommand
-  | VolumeCommand
-  | MuteCommand
-  | FullscreenCommand
-  | PlaySourceCommand
-  | StopCommand;
+  | { type: 'PLAY_PAUSE' }
+  | { type: 'PLAY' }
+  | { type: 'PAUSE' }
+  | { type: 'STOP' }
+  | { type: 'SEEK'; position: number }
+  | { type: 'SEEK_RELATIVE'; delta: number }
+  | { type: 'VOLUME'; volume: number }
+  | { type: 'VOLUME_STEP'; delta: number }
+  | { type: 'MUTE'; muted?: boolean }
+  | { type: 'FULLSCREEN'; fullscreen?: boolean }
+  | { type: 'SUBTITLES'; id: string | null }
+  | { type: 'AUDIO_TRACK'; index: number }
+  | { type: 'PLAY_SOURCE'; request: PlayRequest }
+  | { type: 'QUEUE_ADD'; request: PlayRequest }
+  | { type: 'QUEUE_REMOVE'; id: string }
+  | { type: 'QUEUE_CLEAR' }
+  /** Replace the queue: play requests[startIndex], the rest is queued */
+  | { type: 'QUEUE_SET'; requests: PlayRequest[]; startIndex?: number; shuffle?: boolean }
+  | { type: 'QUEUE_JUMP'; id: string }
+  | { type: 'QUEUE_MOVE'; id: string; to: number }
+  | { type: 'QUEUE_SHUFFLE' }
+  | { type: 'REPEAT'; mode: RepeatMode }
+  | { type: 'PREVIOUS' }
+  | { type: 'NEXT' };
 
-export interface CatalogGetPayload {
-  requestId?: string;
-}
+export type ControlType = ControlCommand['type'];
 
 export interface TorrentAddPayload {
   magnet?: string;
-  torrentBuffer?: string;
+  /** base64 encoded .torrent file */
+  torrentBase64?: string;
+  /** Path of a .torrent file on the TV PC */
+  torrentPath?: string;
   name?: string;
+  /** Start streaming as soon as possible */
+  play?: boolean;
 }
 
-export interface TorrentWatchPayload {
+export interface TorrentRemovePayload {
   torrentId: string;
-  fileIndex?: number;
+  deleteFiles?: boolean;
 }
 
-export interface FileDeletePayload {
+export interface MediaUpdatePayload {
   mediaId: string;
-  fileId?: string;
+  patch: Partial<Pick<MediaItem, 'title' | 'overview' | 'poster' | 'backdrop' | 'year' | 'season' | 'episode' | 'episodeTitle'>>;
 }
 
-export interface MetadataUpdatePayload {
+export interface MediaDeletePayload {
   mediaId: string;
-  title?: string;
-  overview?: string;
-  poster?: string;
-  backdrop?: string;
-  tmdbId?: number;
-  rating?: number;
-  releaseDate?: string;
-  genres?: string[];
+}
+
+export interface TmdbSearchPayload {
+  query: string;
+  type?: 'movie' | 'tv';
+}
+
+export interface MediaApplyTmdbPayload {
+  mediaId: string;
+  tmdbId: number;
+  type: 'movie' | 'tv';
+  /** Apply to every episode of the same show */
+  wholeShow?: boolean;
 }
 
 export interface FsListPayload {
   path?: string;
 }
 
-export interface FsListResult {
-  path: string;
-  entries: FsEntry[];
-}
-
 export interface PowerPayload {
   action: PowerAction;
 }
+
+export type IdleUpdatePayload = Partial<IdleSettings>;
+export type TvSettingsUpdatePayload = Partial<TvSettings>;
 
 export interface GuestsUpdatePayload {
   add?: string[];
   remove?: string[];
 }
 
-export interface GuestsResult {
-  guests: GuestEntry[];
-  dictatorMode: boolean;
-}
-
-export interface WidgetsUpdatePayload {
-  widgets: WidgetConfig[];
-  settings?: Partial<IdleSettings>;
-}
-
-export interface WidgetsResult {
-  widgets: WidgetConfig[];
-  settings: IdleSettings;
-}
-
 export interface SignalMessage {
-  from: string;
+  /** Socket id of the sender, or 'tv' (filled in by the server) */
+  from?: string;
+  /** Target socket id, or 'tv' */
   to: string;
-  kind: 'offer' | 'answer' | 'ice';
-  payload: unknown;
+  /** Session id of one cast (lets the TV drop stale signaling) */
+  sid: string;
+  payload?: unknown;
+  /** Optional description shown on the TV */
+  label?: string;
 }
 
-export interface ErrorPayload {
-  code: string;
-  message: string;
+export interface MusicSourceAddPayload {
+  kind: MusicSourceKind;
+  url: string;
+  username: string;
+  password: string;
+  name?: string;
 }
 
-export const TORRENT_TARGET = 'tv';
+export interface MusicBrowsePayload {
+  sourceId: string;
+  view: MusicView;
+  offset?: number;
+  limit?: number;
+}
+
+export interface MusicItemPayload {
+  sourceId: string;
+  type: 'album' | 'artist' | 'playlist';
+  id: string;
+}
+
+export interface MusicSearchPayload {
+  query: string;
+  sourceId?: string;
+}
+
+export interface UploadBeginPayload {
+  name: string;
+  size: number;
+  type: string;
+  purpose: 'screensaver';
+}
+
+export interface UploadChunkPayload {
+  uploadId: string;
+  index: number;
+  data: ArrayBuffer | Uint8Array;
+}

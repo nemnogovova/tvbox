@@ -1,281 +1,327 @@
 import { useEffect, useState } from 'react';
-import { useStore, useIsOwner } from '../store/store';
-import type { PowerAction, WidgetConfig } from '@tvbox/shared';
-import { Power, Moon, RotateCw, Plus, Trash2, User, Shield, Tv, Server, Loader2 } from 'lucide-react';
+import {
+  Crown,
+  FolderPlus,
+  KeyRound,
+  Link2,
+  LogOut,
+  Moon,
+  Power,
+  RefreshCw,
+  RotateCw,
+  Server,
+  Shield,
+  Smartphone,
+  Trash2,
+  Tv,
+  Unplug,
+  UserPlus,
+  X,
+} from 'lucide-react';
+import { Events, normalizeLinkCode, type PowerAction, type TvSettings } from '@tvbox/shared';
+import { act, changeServer, isOwner, request, signOut, useStore, errorText, toast } from '../store/store';
+import { Section, Spinner, Toggle, cx } from '../components/ui';
+import { navigate } from '../components/LinkPage';
+import { hostOf } from '../components/AuthScreen';
+import { IdleEditor } from '../components/IdleEditor';
+import { AccessCard, AccountCard, AppsCard, TvExtrasCard } from '../components/AccountSettings';
+import { getPref, setPref } from '../lib/config';
+import { isNative, setVolumeKeysEnabled, startBackgroundControl, stopBackgroundControl } from '../lib/native';
+import { getToken } from '../lib/config';
+import { googleSignOut } from '../lib/google';
 
-export function SettingsPage() {
-  const { user, signOut, presence, guests, dictatorMode, setDictatorMode, updateGuests, sendPower, widgets, idleSettings, updateWidgets, serverUrl, connectTo, connected } =
-    useStore();
-  const isOwner = useIsOwner();
-  const [email, setEmail] = useState('');
-  const [urlInput, setUrlInput] = useState(serverUrl);
-  const { socket } = useStore();
-
-  useEffect(() => {
-    if (isOwner && socket) {
-      socket.emit('guests:get');
-      socket.emit('widgets:get');
-    }
-  }, [isOwner, socket]);
-
-  const addGuest = () => {
-    if (!email.trim()) return;
-    updateGuests([email.trim()], []);
-    setEmail('');
-  };
-
-  const applyUrl = () => {
-    if (urlInput.trim()) connectTo(urlInput.trim());
-  };
-
+export function SettingsPage({ onOpenMusic }: { onOpenMusic?: () => void }) {
+  const owner = useStore(isOwner);
   return (
-    <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-semibold">Настройки</h1>
-
-      {/* Server */}
-      <section className="card p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <Server size={16} className="text-accent" />
-          <h2 className="font-medium">Сервер</h2>
-          <span className={`ml-auto text-xs flex items-center gap-1.5 ${connected ? 'text-emerald-400' : 'text-yellow-400'}`}>
-            {connected ? '● Подключено' : 'Переподключение…'}
-          </span>
-        </div>
-        <div className="flex gap-2">
-          <input
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            placeholder="https://tv.nemnogovova.com"
-            className="flex-1 bg-raised border border-line rounded-xl px-3 py-2.5 text-sm outline-none focus:border-accent"
-          />
-          <button onClick={applyUrl} className="btn-primary !px-4">
-            {!connected ? <Loader2 size={16} className="animate-spin" /> : 'Подключить'}
-          </button>
-        </div>
-      </section>
-
-      {/* Account */}
-      <section className="card p-5 flex items-center gap-4">
-        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-accent to-accent2 flex items-center justify-center text-white font-semibold">
-          {user?.name?.charAt(0)?.toUpperCase() || 'U'}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="font-medium truncate">{user?.name}</p>
-          <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-        </div>
-        <span className={`px-2 py-1 rounded-md text-[11px] uppercase tracking-wide ${user?.role === 'owner' ? 'bg-accent/15 text-accent' : 'bg-raised text-gray-400'}`}>
-          {user?.role}
-        </span>
-        <button onClick={signOut} className="btn-ghost !py-2">
-          Sign out
-        </button>
-      </section>
-
-      {/* TV status */}
-      <section className="card p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <Tv size={16} className="text-accent" />
-          <h2 className="font-medium">TV Device</h2>
-        </div>
-        <p className="text-sm text-gray-400">
-          Status: <span className={presence.tvConnected ? 'text-emerald-400' : 'text-red-400'}>{presence.tvConnected ? 'Online' : 'Offline'}</span>
-        </p>
-        {isOwner && (
-          <div className="grid grid-cols-3 gap-2 mt-4">
-            <PowerButton action="sleep" icon={Moon} label="Sleep" sendPower={sendPower} />
-            <PowerButton action="reboot" icon={RotateCw} label="Reboot" sendPower={sendPower} />
-            <PowerButton action="shutdown" icon={Power} label="Off" sendPower={sendPower} danger />
-          </div>
-        )}
-      </section>
-
-      {/* Admin */}
-      {isOwner && (
-        <>
-          <section className="card p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Shield size={16} className="text-accent" />
-              <h2 className="font-medium">Guests</h2>
-            </div>
-            <div className="flex gap-2 mb-3">
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addGuest()}
-                placeholder="guest@example.com"
-                className="flex-1 bg-raised border border-line rounded-xl px-3 py-2 text-sm outline-none focus:border-accent"
-              />
-              <button onClick={addGuest} className="btn-primary !px-3">
-                <Plus size={16} />
-              </button>
-            </div>
-            <div className="flex flex-col divide-y divide-line">
-              {guests.length === 0 && <p className="text-sm text-gray-600 py-2">No guests yet</p>}
-              {guests.map((g) => (
-                <div key={g.email} className="flex items-center justify-between py-2">
-                  <span className="text-sm">{g.email}</span>
-                  <button onClick={() => updateGuests([], [g.email])} className="text-gray-500 hover:text-red-400">
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="card p-5 flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <User size={16} className="text-accent" />
-                <h2 className="font-medium">Dictator mode</h2>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">Block all guest commands</p>
-            </div>
-            <button
-              onClick={() => setDictatorMode(!dictatorMode)}
-              className={`relative w-12 h-7 rounded-full transition-colors ${dictatorMode ? 'bg-red-500' : 'bg-raised'}`}
-            >
-              <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${dictatorMode ? 'left-6' : 'left-1'}`} />
-            </button>
-          </section>
-
-          <WidgetEditor widgets={widgets} idleSettings={idleSettings} onSave={updateWidgets} />
-        </>
-      )}
+    <div className="flex flex-col gap-4">
+      <h1 className="h-page">Настройки</h1>
+      <AccountCard onOpenMusic={onOpenMusic} />
+      <TvCard />
+      {owner && <TvExtrasCard />}
+      <LinkDeviceCard />
+      {owner && <AccessCard />}
+      {owner && <TvSettingsCard />}
+      {owner && <IdleEditor />}
+      <AppsCard />
+      <AppCard />
     </div>
   );
 }
 
-function PowerButton({
-  action,
-  icon: Icon,
-  label,
-  sendPower,
-  danger,
-}: {
-  action: PowerAction;
-  icon: typeof Power;
-  label: string;
-  sendPower: (a: PowerAction) => void;
-  danger?: boolean;
-}) {
+function TvCard() {
+  const presence = useStore((s) => s.presence);
+  const owner = useStore(isOwner);
+  const [confirm, setConfirm] = useState<PowerAction | 'unpair' | null>(null);
+
+  const power = async (action: PowerAction) => {
+    setConfirm(null);
+    await act(Events.POWER, { action }, 'Команда отправлена');
+  };
+
+  const buttons: { action: PowerAction; label: string; icon: typeof Power; danger?: boolean }[] = [
+    { action: 'sleep', label: 'Сон', icon: Moon },
+    { action: 'reboot', label: 'Перезагрузка', icon: RotateCw },
+    { action: 'shutdown', label: 'Выключить', icon: Power, danger: true },
+  ];
+
   return (
-    <button
-      onClick={() => sendPower(action)}
-      className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border border-line text-xs ${
-        danger ? 'text-red-400 hover:border-red-500/40' : 'text-gray-300 hover:border-accent/50'
-      }`}
+    <Section
+      title="Телевизор"
+      icon={<Tv size={18} />}
+      right={
+        <span className={cx('chip', presence.tvConnected ? 'bg-ok/10 text-ok' : 'bg-bad/10 text-bad')}>
+          <span className={cx('h-2 w-2 rounded-full', presence.tvConnected ? 'bg-ok' : 'bg-bad')} />
+          {presence.tvConnected ? 'В сети' : 'Офлайн'}
+        </span>
+      }
     >
-      <Icon size={18} />
-      {label}
-    </button>
+      <div className="text-sm text-fg-muted">
+        {presence.tvName ? <>«{presence.tvName}»</> : 'Телевизор ещё не подключён'}
+        {presence.remotes.length > 0 && <> · сейчас на пульте: {presence.remotes.map((r) => r.name.split(' ')[0]).join(', ')}</>}
+      </div>
+      {!presence.tvName && owner && (
+        <p className="mt-3 text-sm leading-relaxed text-fg-dim">
+          Запустите TVBox на компьютере у телевизора и отсканируйте QR-код с экрана этим телефоном — или введите код ниже.
+        </p>
+      )}
+      {owner && (
+        <>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {buttons.map((b) => (
+              <button
+                key={b.action}
+                disabled={!presence.tvConnected}
+                onClick={() => (confirm === b.action ? void power(b.action) : setConfirm(b.action))}
+                className={cx(
+                  'flex flex-col items-center gap-2 rounded-2xl border px-2 py-3.5 text-xs font-bold transition disabled:opacity-40',
+                  confirm === b.action
+                    ? 'border-bad bg-bad/15 text-bad'
+                    : b.danger
+                      ? 'border-white/5 bg-ink-800 text-bad hover:border-bad/40'
+                      : 'border-white/5 bg-ink-800 text-fg-muted hover:border-ember/40 hover:text-fg',
+                )}
+              >
+                <b.icon size={20} />
+                {confirm === b.action ? 'Точно?' : b.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button className="btn-ghost px-3 py-2 text-xs" disabled={!presence.tvConnected} onClick={() => power('restart-app')}>
+              <RefreshCw size={14} /> Перезапустить TVBox
+            </button>
+            {presence.tvName && (
+              <button
+                className={cx('btn-ghost px-3 py-2 text-xs', confirm === 'unpair' && 'text-bad')}
+                onClick={async () => {
+                  if (confirm !== 'unpair') return setConfirm('unpair');
+                  setConfirm(null);
+                  await act(Events.TV_UNPAIR, {}, 'Телевизор отвязан — подключите его заново по QR-коду');
+                }}
+              >
+                <Unplug size={14} /> {confirm === 'unpair' ? 'Подтвердите отвязку' : 'Отвязать телевизор'}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </Section>
   );
 }
 
-function WidgetEditor({
-  widgets,
-  idleSettings,
-  onSave,
-}: {
-  widgets: WidgetConfig[];
-  idleSettings: import('@tvbox/shared').IdleSettings | null;
-  onSave: (w: WidgetConfig[], s?: Partial<import('@tvbox/shared').IdleSettings>) => void;
-}) {
-  const [draft, setDraft] = useState<WidgetConfig[]>(widgets);
-  const [screensaver, setScreensaver] = useState<string>(idleSettings?.screensaver || 'off');
+function LinkDeviceCard() {
+  const [code, setCode] = useState('');
+  return (
+    <Section title="Подключить по коду" icon={<Link2 size={18} />}>
+      <p className="mb-3 text-sm text-fg-muted">Код показан на экране телевизора или в приложении на телефоне.</p>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const c = normalizeLinkCode(code);
+          if (c.length >= 6) navigate(`/link/${c}`);
+        }}
+      >
+        <input
+          className="field font-mono text-lg font-bold uppercase tracking-[0.25em]"
+          value={code}
+          maxLength={8}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="ABC123"
+        />
+        <button className="btn-primary" disabled={normalizeLinkCode(code).length < 6}>
+          Далее
+        </button>
+      </form>
+    </Section>
+  );
+}
+
+function TvSettingsCard() {
+  const tvOnline = useStore((s) => s.presence.tvConnected);
+  const [s, setS] = useState<TvSettings | null>(null);
+  const [dir, setDir] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    setDraft(widgets);
-  }, [widgets]);
-  useEffect(() => {
-    setScreensaver(idleSettings?.screensaver || 'off');
-  }, [idleSettings]);
+    if (!tvOnline) return;
+    void request<TvSettings>(Events.TV_SETTINGS_GET).then((r) => r.ok && r.data && setS(r.data));
+  }, [tvOnline]);
 
-  const save = () =>
-    onSave(draft, { screensaver: screensaver as import('@tvbox/shared').IdleSettings['screensaver'] });
+  if (!tvOnline) return null;
+  if (!s)
+    return (
+      <Section title="Настройки ТВ-клиента" icon={<KeyRound size={18} />}>
+        <div className="flex justify-center py-4">
+          <Spinner />
+        </div>
+      </Section>
+    );
 
-  const toggle = (id: string) => setDraft((d) => d.map((w) => (w.id === id ? { ...w, enabled: !w.enabled } : w)));
-
-  const addCustom = () => {
-    setDraft((d) => [
-      ...d,
-      {
-        id: `custom-${Date.now()}`,
-        type: 'custom',
-        title: 'Custom widget',
-        enabled: true,
-        custom: { html: '<div class="widget">Hello, TV!</div>', css: '', js: '' },
-      },
-    ]);
-  };
-
-  const updateCustom = (id: string, field: 'html' | 'css' | 'js', value: string) => {
-    setDraft((d) => d.map((w) => (w.id === id ? { ...w, custom: { ...w.custom!, [field]: value } } : w)));
+  const save = async (patch: Partial<TvSettings>) => {
+    const next = { ...s, ...patch };
+    setS(next);
+    setSaving(true);
+    const r = await request<TvSettings>(Events.TV_SETTINGS_UPDATE, patch);
+    setSaving(false);
+    if (!r.ok) toast(errorText(r.error), 'error');
+    else if (r.data) setS(r.data);
   };
 
   return (
-    <section className="card p-5">
-      <h2 className="font-medium mb-3">Idle screen widgets</h2>
-      <div className="flex flex-col gap-3">
-        {draft.map((w) => (
-          <div key={w.id} className="border border-line rounded-xl p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{w.title || w.type}</span>
-              <button
-                onClick={() => toggle(w.id)}
-                className={`relative w-11 h-6 rounded-full transition-colors ${w.enabled ? 'bg-accent' : 'bg-raised'}`}
-              >
-                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${w.enabled ? 'left-[22px]' : 'left-0.5'}`} />
-              </button>
-            </div>
-            {w.type === 'custom' && w.custom && (
-              <div className="flex flex-col gap-2 mt-3">
-                <textarea
-                  value={w.custom.html}
-                  onChange={(e) => updateCustom(w.id, 'html', e.target.value)}
-                  placeholder="HTML"
-                  rows={2}
-                  className="w-full bg-raised border border-line rounded-lg px-2 py-1.5 text-xs font-mono outline-none focus:border-accent"
-                />
-                <textarea
-                  value={w.custom.css}
-                  onChange={(e) => updateCustom(w.id, 'css', e.target.value)}
-                  placeholder="CSS"
-                  rows={2}
-                  className="w-full bg-raised border border-line rounded-lg px-2 py-1.5 text-xs font-mono outline-none focus:border-accent"
-                />
-                <textarea
-                  value={w.custom.js}
-                  onChange={(e) => updateCustom(w.id, 'js', e.target.value)}
-                  placeholder="JS"
-                  rows={2}
-                  className="w-full bg-raised border border-line rounded-lg px-2 py-1.5 text-xs font-mono outline-none focus:border-accent"
-                />
-              </div>
-            )}
-          </div>
-        ))}
-        <div className="flex items-center gap-3">
-          <button onClick={addCustom} className="btn-ghost !py-2">
-            <Plus size={16} /> Add custom widget
-          </button>
-          <label className="text-xs text-gray-500 ml-auto flex items-center gap-2">
-            Screensaver
-            <select
-              value={screensaver}
-              onChange={(e) => setScreensaver(e.target.value)}
-              className="bg-raised border border-line rounded-lg px-2 py-1.5 text-xs outline-none"
-            >
-              <option value="off">Off</option>
-              <option value="black">Black</option>
-              <option value="clock">Floating clock</option>
-              <option value="wallpaper">Wallpaper</option>
-            </select>
-          </label>
+    <Section title="Настройки ТВ-клиента" icon={<KeyRound size={18} />} right={saving ? <Spinner size={16} /> : null}>
+      <div className="flex flex-col gap-4">
+        <div>
+          <label className="label">Ключ TMDb API (обложки и описания)</label>
+          <input
+            className="field mt-2 font-mono text-sm"
+            defaultValue={s.tmdbApiKey}
+            placeholder="Ключ v3 или токен v4 с themoviedb.org"
+            onBlur={(e) => e.target.value.trim() !== s.tmdbApiKey && void save({ tmdbApiKey: e.target.value.trim() })}
+          />
+          <p className="mt-1.5 text-xs text-fg-dim">Бесплатно: themoviedb.org → Настройки → API.</p>
         </div>
-        <button onClick={save} className="btn-primary self-end">
-          Save widgets
+
+        <div>
+          <label className="label">Папки с медиа на ТВ-компьютере</label>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {s.mediaDirs.map((d) => (
+              <div key={d} className="flex items-center gap-2 rounded-xl bg-ink-800 px-3 py-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">{d}</span>
+                <button className="icon-btn h-7 w-7" onClick={() => save({ mediaDirs: s.mediaDirs.filter((x) => x !== d) })}>
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <form
+            className="mt-2 flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (dir.trim()) void save({ mediaDirs: [...s.mediaDirs, dir.trim()] }).then(() => setDir(''));
+            }}
+          >
+            <input className="field font-mono text-sm" value={dir} onChange={(e) => setDir(e.target.value)} placeholder="D:\Фильмы" />
+            <button className="btn-soft" disabled={!dir.trim()}>
+              <FolderPlus size={18} />
+            </button>
+          </form>
+        </div>
+
+        <div>
+          <label className="label">Папка для загрузок</label>
+          <input
+            className="field mt-2 font-mono text-sm"
+            defaultValue={s.downloadDir}
+            onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== s.downloadDir && void save({ downloadDir: e.target.value.trim() })}
+          />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex items-center gap-3 rounded-2xl bg-ink-800 px-4 py-3">
+            <span className="flex-1 text-sm font-semibold">Запуск вместе с Windows</span>
+            <Toggle checked={s.autostart} onChange={(v) => void save({ autostart: v })} />
+          </div>
+          <select className="field" value={s.language} onChange={(e) => void save({ language: e.target.value })}>
+            <option value="ru-RU">Описания на русском</option>
+            <option value="en-US">Описания на английском</option>
+            <option value="sr-RS">Описания на сербском</option>
+          </select>
+        </div>
+
+        <button className="btn-soft" onClick={() => act(Events.LIBRARY_RESCAN, {}, 'Медиатека обновляется')}>
+          <RefreshCw size={16} /> Пересканировать медиатеку
         </button>
       </div>
-    </section>
+    </Section>
+  );
+}
+
+function AppCard() {
+  const serverUrl = useStore((s) => s.serverUrl);
+  const [volKeys, setVolKeys] = useState(getPref('volumeKeys', true));
+  const [bg, setBg] = useState(getPref('bgControl', true));
+  const [editing, setEditing] = useState(false);
+  const [url, setUrl] = useState(serverUrl);
+  const native = isNative();
+  return (
+    <Section title="Подключение" icon={native ? <Smartphone size={18} /> : <Server size={18} />}>
+      {native && (
+        <div className="mb-4 flex items-center gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold">Кнопки громкости телефона</div>
+            <div className="text-xs text-fg-dim">Управляют громкостью телевизора, пока открыт пульт</div>
+          </div>
+          <Toggle
+            checked={volKeys}
+            onChange={(v) => {
+              setVolKeys(v);
+              setPref('volumeKeys', v);
+              void setVolumeKeysEnabled(v);
+            }}
+          />
+        </div>
+      )}
+      {native && (
+        <div className="mb-4 flex items-center gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold">Управление при выключенном экране</div>
+            <div className="text-xs text-fg-dim">Уведомление с кнопками и громкость ТВ кнопками телефона — даже на экране блокировки</div>
+          </div>
+          <Toggle
+            checked={bg}
+            onChange={(v) => {
+              setBg(v);
+              setPref('bgControl', v);
+              const t = getToken();
+              if (v && t) void startBackgroundControl(serverUrl, t);
+              else void stopBackgroundControl();
+            }}
+          />
+        </div>
+      )}
+      <div className="flex items-center gap-3 text-sm">
+        <span className="text-fg-muted">Сервер</span>
+        <span className="min-w-0 flex-1 truncate font-semibold">{hostOf(serverUrl)}</span>
+        <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setEditing((v) => !v)}>
+          Изменить
+        </button>
+      </div>
+      {editing && (
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const v = url.trim();
+            changeServer(v ? (/^https?:\/\//.test(v) ? v : `https://${v}`) : null);
+            setEditing(false);
+          }}
+        >
+          <input className="field" value={url} onChange={(e) => setUrl(e.target.value)} />
+          <button className="btn-soft">OK</button>
+        </form>
+      )}
+
+    </Section>
   );
 }

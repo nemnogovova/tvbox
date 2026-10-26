@@ -1,125 +1,181 @@
-import { useEffect, useState } from 'react';
-import { useStore } from '../store/store';
-import type { TorrentInfo } from '@tvbox/shared';
-import { Download, Play, Trash2, Plus } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, CheckCircle2, Download, FileUp, Magnet, Play, Plus, Trash2, Users } from 'lucide-react';
+import { Events, formatBytes, formatDuration, formatSpeed, type TorrentInfo } from '@tvbox/shared';
+import { act, control, useStore } from '../store/store';
+import { sendTorrentFile } from '../lib/actions';
+import { Empty, Sheet, cx } from '../components/ui';
 
 export function DownloadsPage() {
-  const { torrents, requestTorrents, addTorrent, removeTorrent, watchTorrent } = useStore();
+  const torrents = useStore((s) => s.torrents);
+  const tvOnline = useStore((s) => s.presence.tvConnected);
   const [magnet, setMagnet] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    requestTorrents();
-    const t = setInterval(requestTorrents, 4000);
-    return () => clearInterval(t);
-  }, [requestTorrents]);
-
-  const submit = () => {
-    if (!magnet.trim()) return;
-    addTorrent(magnet.trim());
-    setMagnet('');
+  const add = async (play: boolean) => {
+    const m = magnet.trim();
+    if (!m) return;
+    const r = await act(Events.TORRENT_ADD, { magnet: m, play }, play ? 'Начинаем — откроется на ТВ, как только наберётся буфер' : 'Добавлено в загрузки');
+    if (r.ok) setMagnet('');
   };
+
+  const sorted = [...torrents].sort((a, b) => b.addedAt - a.addedAt);
 
   return (
     <div className="flex flex-col gap-5">
-      <h1 className="text-xl font-semibold">Загрузки</h1>
+      <h1 className="h-page">Загрузки</h1>
 
-      <div className="flex gap-2">
-        <input
-          value={magnet}
-          onChange={(e) => setMagnet(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder="magnet:?xt=urn:btih:… or .torrent dropped anywhere"
-          className="flex-1 bg-surface border border-line rounded-xl px-3 py-2.5 text-sm outline-none focus:border-accent"
-        />
-        <button onClick={submit} className="btn-primary">
-          <Plus size={16} /> Add
+      <div className="panel p-3">
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add(false);
+          }}
+        >
+          <div className="relative flex-1">
+            <Magnet size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-fg-dim" />
+            <input
+              className="field pl-10"
+              value={magnet}
+              onChange={(e) => setMagnet(e.target.value)}
+              placeholder="magnet:?xt=urn:btih:…"
+              autoCapitalize="off"
+              autoCorrect="off"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button type="button" className="btn-soft flex-1 sm:flex-none" disabled={!magnet.trim() || !tvOnline} onClick={() => add(true)}>
+              <Play size={16} /> Смотреть
+            </button>
+            <button className="btn-primary flex-1 sm:flex-none" disabled={!magnet.trim() || !tvOnline}>
+              <Plus size={16} /> Скачать
+            </button>
+          </div>
+        </form>
+        <button className="btn-ghost mt-1 w-full text-xs" disabled={!tvOnline} onClick={() => fileRef.current?.click()}>
+          <FileUp size={15} /> Выбрать .torrent файл
         </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".torrent,application/x-bittorrent"
+          multiple
+          hidden
+          onChange={(e) => {
+            for (const f of Array.from(e.target.files || [])) void sendTorrentFile(f);
+            e.target.value = '';
+          }}
+        />
       </div>
 
-      {torrents.length === 0 ? (
-        <div className="text-center text-gray-500 py-16">
-          <Download size={40} className="mx-auto mb-3 opacity-40" />
-          <p>No active downloads</p>
-        </div>
+      {sorted.length === 0 ? (
+        <Empty
+          icon={<Download size={28} />}
+          title="Загрузок нет"
+          text="Вставьте magnet-ссылку, перетащите .torrent файл в окно или откройте торрент из браузера телефона."
+        />
       ) : (
         <div className="flex flex-col gap-3">
-          {torrents.map((t) => (
-            <TorrentCard key={t.id} t={t} onRemove={() => removeTorrent(t.id)} onWatch={() => watchTorrent(t.id)} />
+          {sorted.map((t) => (
+            <TorrentCard key={t.id} t={t} />
           ))}
         </div>
       )}
+
+      <p className="px-2 text-center text-xs leading-relaxed text-fg-dim">
+        Раздача отключается сразу после завершения загрузки — канал не тратится на чужие скачивания.
+      </p>
     </div>
   );
 }
 
-function TorrentCard({ t, onRemove, onWatch }: { t: TorrentInfo; onRemove: () => void; onWatch: () => void }) {
-  const pct = Math.round(t.progress * 100);
-  const canWatch = t.files.length > 0 || t.progress > 0;
+function TorrentCard({ t }: { t: TorrentInfo }) {
+  const [pickFile, setPickFile] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const pct = Math.floor(t.progress * 1000) / 10;
+  const done = t.status === 'done';
+  const playable = t.files.filter((f) => f.playable);
+
+  const watch = (fileIndex?: number) => {
+    void control({ type: 'PLAY_SOURCE', request: { source: 'torrent', torrentId: t.id, fileIndex, title: t.name } });
+    setPickFile(false);
+  };
+
   return (
-    <div className="card p-4 flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium text-sm truncate">{t.name}</p>
-          <p className="text-xs text-gray-500">
-            {statusLabel(t.status)}
-            {t.downloadSpeed > 0 && ` · ↓ ${fmtSpeed(t.downloadSpeed)}`}
-            {t.uploadSpeed > 0 && ` · ↑ ${fmtSpeed(t.uploadSpeed)}`}
-            {` · ${t.peers} peers`}
-          </p>
+    <div className="panel p-4">
+      <div className="flex items-start gap-3">
+        <div className={cx('mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl', done ? 'bg-ok/15 text-ok' : 'bg-ember/15 text-ember')}>
+          {done ? <CheckCircle2 size={20} /> : <Download size={20} />}
         </div>
-        <div className="flex gap-1 shrink-0">
-          {canWatch && (
-            <button onClick={onWatch} className="btn-primary !px-3 !py-1.5 !text-xs" title="Watch now">
-              <Play size={14} /> Watch
-            </button>
-          )}
-          <button onClick={onRemove} className="btn-danger !px-3 !py-1.5" title="Remove">
-            <Trash2 size={14} />
-          </button>
+        <div className="min-w-0 flex-1">
+          <p className="line-clamp-2 break-all text-sm font-bold leading-snug">{t.name || 'Получаем метаданные…'}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-fg-dim">
+            {t.status === 'metadata' && <span>Ищем пиров…</span>}
+            {t.status === 'error' && <span className="text-bad">{t.error || 'Ошибка'}</span>}
+            {t.status === 'downloading' && (
+              <>
+                <span className="flex items-center gap-1">
+                  <ArrowDown size={12} /> {formatSpeed(t.downloadSpeed)}
+                </span>
+                {t.uploadSpeed > 1024 && (
+                  <span className="flex items-center gap-1">
+                    <ArrowUp size={12} /> {formatSpeed(t.uploadSpeed)}
+                  </span>
+                )}
+                <span className="flex items-center gap-1">
+                  <Users size={12} /> {t.peers}
+                </span>
+                {t.eta !== undefined && t.eta > 0 && t.eta < 360000 && <span>≈ {formatDuration(t.eta)}</span>}
+              </>
+            )}
+            {done && <span className="text-ok">Готово · раздача остановлена</span>}
+          </div>
         </div>
       </div>
-      <div className="h-2 rounded-full bg-raised overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all ${pct >= 100 ? 'bg-emerald-400' : 'bg-accent'}`}
-          style={{ width: `${pct}%` }}
-        />
+
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-ink-700">
+        <div className={cx('h-full rounded-full transition-all duration-700', done ? 'bg-ok' : 'bg-ember')} style={{ width: `${Math.max(1, pct)}%` }} />
       </div>
-      <div className="flex justify-between text-[11px] text-gray-500">
-        <span>{pct}%</span>
+      <div className="tabular mt-1.5 flex justify-between text-xs font-semibold text-fg-dim">
+        <span>{pct.toFixed(pct < 10 ? 1 : 0)}%</span>
         <span>
-          {fmtSize(t.downloaded)} / {fmtSize(t.size)}
+          {formatBytes(t.downloaded)} / {formatBytes(t.size)}
         </span>
       </div>
+
+      <div className="mt-3 flex gap-2">
+        {playable.length > 0 && (
+          <button className="btn-primary flex-1 py-2.5" onClick={() => (playable.length > 1 ? setPickFile(true) : watch(playable[0].index))}>
+            <Play size={16} fill="currentColor" /> {done ? 'Смотреть' : 'Смотреть сейчас'}
+          </button>
+        )}
+        {!confirm ? (
+          <button className="btn-soft py-2.5" onClick={() => setConfirm(true)} title="Удалить">
+            <Trash2 size={16} />
+          </button>
+        ) : (
+          <div className="flex flex-1 gap-2">
+            <button className="btn-soft flex-1 py-2.5 text-xs" onClick={() => act(Events.TORRENT_REMOVE, { torrentId: t.id, deleteFiles: false })}>
+              Убрать из списка
+            </button>
+            <button className="btn-danger flex-1 py-2.5 text-xs" onClick={() => act(Events.TORRENT_REMOVE, { torrentId: t.id, deleteFiles: true })}>
+              + файлы
+            </button>
+          </div>
+        )}
+      </div>
+
+      <Sheet open={pickFile} onClose={() => setPickFile(false)} title="Какой файл смотреть?">
+        <div className="flex flex-col gap-1">
+          {playable.map((f) => (
+            <button key={f.index} onClick={() => watch(f.index)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-white/5">
+              <Play size={16} className="shrink-0 text-ember" />
+              <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
+              <span className="tabular shrink-0 text-xs text-fg-dim">{Math.round(f.progress * 100)}%</span>
+            </button>
+          ))}
+        </div>
+      </Sheet>
     </div>
   );
-}
-
-function statusLabel(s: TorrentInfo['status']): string {
-  switch (s) {
-    case 'downloading':
-      return 'Downloading';
-    case 'seeding':
-      return 'Seeding';
-    case 'done':
-      return 'Complete';
-    case 'paused':
-      return 'Paused';
-    case 'error':
-      return 'Error';
-    default:
-      return s;
-  }
-}
-
-function fmtSpeed(bps: number): string {
-  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
-}
-
-function fmtSize(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
-  return `${(b / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }

@@ -1,0 +1,4 @@
+# Only the pre-built bundle is needed in the image build context
+*
+!server
+!server/**

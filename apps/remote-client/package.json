@@ -1,28 +1,27 @@
 {
   "name": "@tvbox/remote-client",
-  "version": "1.0.0",
+  "version": "3.0.2",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview",
-    "cap:add": "cap add android",
-    "cap:sync": "cap sync android",
-    "cap:open": "cap open android"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@capacitor/core": "^6.1.2",
-    "@tvbox/shared": "1.0.0",
+    "@fontsource-variable/manrope": "^5.1.0",
     "lucide-react": "^0.451.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "socket.io-client": "^4.7.5"
+    "socket.io-client": "^4.8.1",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@capacitor/android": "^6.1.2",
     "@capacitor/cli": "^6.1.2",
+    "@tvbox/shared": "2.0.0",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.2",

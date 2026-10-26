@@ -1,14 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "dist-electron",
-    "rootDir": "electron",
-    "module": "CommonJS",
-    "target": "ES2021",
-    "lib": ["ES2021"],
-    "moduleResolution": "Node",
-    "types": ["node"]
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["electron"],
-  "exclude": ["electron/**/*.test.ts", "electron/**/__tests__"]
+  "include": ["electron", "src/bridge.ts"],
+  "exclude": ["electron/**/*.test.ts"]
 }

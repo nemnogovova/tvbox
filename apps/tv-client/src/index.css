@@ -1,9 +1,13 @@
+@import '@fontsource-variable/manrope';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color-scheme: dark;
+  /* everything scales with the screen: 1rem ≈ 16px on a 1080p TV */
+  font-size: clamp(12px, 0.84vw, 36px);
 }
 
 html,
@@ -11,19 +15,37 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #050507;
-  color: #e8e8f0;
   overflow: hidden;
-  font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: #05060a;
+  color: #eceef3;
+  font-family: 'Manrope Variable', Manrope, system-ui, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
 }
 
-body {
-  cursor: default;
-}
-body.idle-cursor {
-  cursor: none;
+body.hide-cursor,
+body.hide-cursor * {
+  cursor: none !important;
 }
 
-* {
-  -webkit-tap-highlight-color: transparent;
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+video::cue {
+  font-family: 'Manrope Variable', system-ui, sans-serif;
+  font-size: 2.3vw;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+
+.widget {
+  @apply relative overflow-hidden rounded-[1.75rem] border border-white/[0.07] bg-ink-850/70 shadow-2xl backdrop-blur-2xl;
+}
+
+.label {
+  @apply text-[0.8rem] font-bold uppercase tracking-[0.18em] text-fg-dim;
 }

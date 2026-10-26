@@ -1,66 +1,103 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import type { FsEntry, FsEntryKind } from '@tvbox/shared';
+import { mediaKindOfFile, type FsEntry, type FsEntryKind, type FsListResult } from '@tvbox/shared';
 
-const VIDEO_EXT = new Set(['.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.ts', '.m2ts']);
-const AUDIO_EXT = new Set(['.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg', '.opus']);
-const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
-
-export function isVideoFile(p: string): boolean {
-  return VIDEO_EXT.has(path.extname(p).toLowerCase());
-}
-export function isAudioFile(p: string): boolean {
-  return AUDIO_EXT.has(path.extname(p).toLowerCase());
-}
-export function isImageFile(p: string): boolean {
-  return IMAGE_EXT.has(path.extname(p).toLowerCase());
+export function classify(name: string): FsEntryKind {
+  if (/\.torrent$/i.test(name)) return 'torrent';
+  return mediaKindOfFile(name) ?? 'other';
 }
 
-export function classify(p: string): FsEntryKind {
-  const ext = path.extname(p).toLowerCase();
-  if (VIDEO_EXT.has(ext)) return 'video';
-  if (AUDIO_EXT.has(ext)) return 'audio';
-  if (IMAGE_EXT.has(ext)) return 'image';
-  return 'other';
-}
-
-export function listDirectory(input: string): FsEntry[] {
-  const dir = input && input !== '/' ? path.resolve(input) : '';
-  if (!dir) {
-    return driveRoots();
-  }
-  try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const result: FsEntry[] = [];
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        result.push({ name: e.name, path: full, kind: 'dir' });
-      } else if (e.isFile()) {
-        const stat = fs.statSync(full);
-        result.push({ name: e.name, path: full, kind: classify(full), size: stat.size, modifiedAt: stat.mtimeMs });
-      }
+function roots(extra: string[]): FsEntry[] {
+  const out: FsEntry[] = [];
+  const add = (p: string, name?: string) => {
+    try {
+      if (fs.statSync(p).isDirectory() && !out.some((e) => e.path === p)) out.push({ name: name || p, path: p, kind: 'dir' });
+    } catch {
+      // missing
     }
-    return result.sort((a, b) =>
-      a.kind === 'dir' && b.kind !== 'dir' ? -1 : b.kind === 'dir' && a.kind !== 'dir' ? 1 : a.name.localeCompare(b.name),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function driveRoots(): FsEntry[] {
+  };
+  for (const d of extra) add(d, `★ ${path.basename(d) || d}`);
+  const home = os.homedir();
+  add(path.join(home, 'Videos'), 'Видео');
+  add(path.join(home, 'Downloads'), 'Загрузки');
+  add(path.join(home, 'Desktop'), 'Рабочий стол');
+  add(path.join(home, 'Music'), 'Музыка');
+  add(path.join(home, 'Pictures'), 'Изображения');
   if (process.platform === 'win32') {
-    const roots: FsEntry[] = [];
-    for (let c = 65; c <= 90; c++) {
-      const letter = `${String.fromCharCode(c)}:\\`;
-      try {
-        if (fs.existsSync(letter)) roots.push({ name: letter, path: letter, kind: 'dir' });
-      } catch {
-        // skip
+    for (let c = 67; c <= 90; c++) add(`${String.fromCharCode(c)}:\\`, `Диск ${String.fromCharCode(c)}:`);
+  } else {
+    add('/', '/');
+    add('/media', '/media');
+    add('/mnt', '/mnt');
+  }
+  return out;
+}
+
+export async function listDirectory(input: string | undefined, favorites: string[]): Promise<FsListResult> {
+  const dir = input ? path.resolve(input) : '';
+  if (!dir) return { path: '', parent: null, entries: roots(favorites) };
+  const parentDir = path.dirname(dir);
+  const parent = parentDir === dir ? '' : parentDir;
+  try {
+    const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+    const entries: FsEntry[] = [];
+    for (const e of dirents) {
+      if (e.name.startsWith('.') || e.name.startsWith('$')) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) entries.push({ name: e.name, path: full, kind: 'dir' });
+      else if (e.isFile()) {
+        let size: number | undefined;
+        let modifiedAt: number | undefined;
+        try {
+          const st = await fs.promises.stat(full);
+          size = st.size;
+          modifiedAt = st.mtimeMs;
+        } catch {
+          // unreadable
+        }
+        entries.push({ name: e.name, path: full, kind: classify(e.name), size, modifiedAt });
       }
     }
-    return roots;
+    const rank = (k: FsEntryKind) => (k === 'dir' ? 0 : k === 'other' ? 2 : 1);
+    entries.sort((a, b) => rank(a.kind) - rank(b.kind) || a.name.localeCompare(b.name, 'ru', { numeric: true }));
+    return { path: dir, parent, entries };
+  } catch (e) {
+    return { path: dir, parent, entries: [], error: `Нет доступа: ${(e as Error).message}` };
   }
-  return [{ name: '/', path: '/', kind: 'dir' }];
+}
+
+/** External subtitle files that sit next to a video (same base name). */
+export function findExternalSubtitles(videoPath: string): { path: string; label: string }[] {
+  const dir = path.dirname(videoPath);
+  const base = path.basename(videoPath, path.extname(videoPath)).toLowerCase();
+  const out: { path: string; label: string }[] = [];
+  const read = (d: string) => {
+    try {
+      return fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  };
+  const isSub = (n: string) => /\.(srt|vtt|ass|ssa)$/i.test(n);
+  const label = (n: string, strip: string) =>
+    n.slice(0, -path.extname(n).length).slice(strip.length).replace(/^[.\s_-]+/, '') || 'Внешние';
+
+  for (const e of read(dir)) {
+    if (e.isFile() && isSub(e.name) && e.name.toLowerCase().startsWith(base)) {
+      out.push({ path: path.join(dir, e.name), label: label(e.name, base) });
+    } else if (e.isDirectory() && /^(subs?|subtitles|субтитры)$/i.test(e.name)) {
+      const subDir = path.join(dir, e.name);
+      for (const s of read(subDir)) {
+        if (s.isFile() && isSub(s.name) && s.name.toLowerCase().includes(base)) {
+          out.push({ path: path.join(subDir, s.name), label: label(s.name, '') });
+        } else if (s.isDirectory() && s.name.toLowerCase() === base) {
+          for (const f of read(path.join(subDir, s.name))) {
+            if (f.isFile() && isSub(f.name)) out.push({ path: path.join(subDir, s.name, f.name), label: label(f.name, '') });
+          }
+        }
+      }
+    }
+  }
+  return out.slice(0, 12);
 }

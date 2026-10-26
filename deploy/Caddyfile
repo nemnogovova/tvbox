@@ -1,4 +1,4 @@
 {$DOMAIN} {
-	encode gzip
-	reverse_proxy {$UPSTREAM}
+	encode zstd gzip
+	reverse_proxy backend:3000
 }

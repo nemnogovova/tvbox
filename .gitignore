@@ -22,3 +22,10 @@ apps/remote-client/android/local.properties
 apps/remote-client/android/app/src/main/assets/
 *.apk
 *.aab
+
+# TVBox 2.0
+deploy/.bundle/
+release/
+.release-token
+.android-release.jks
+.android-release.json

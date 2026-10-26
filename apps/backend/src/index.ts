@@ -1,65 +1,75 @@
 import http from 'node:http';
-import { loadConfig } from './config';
+import type { Server } from 'socket.io';
+import { loadConfig, loadDotEnv, type BackendConfig } from './config';
 import { JsonStore } from './store';
-import { createGoogleAuthenticator } from './auth';
+import { AuthService, createGoogleVerifier, type GoogleVerifier } from './auth';
 import { createApp } from './app';
-import { createSocketHub } from './socket';
+import { createHub, type Hub } from './hub';
 
 export interface TvboxServer {
-  config: ReturnType<typeof loadConfig>;
+  config: BackendConfig;
   httpServer: http.Server;
-  io: ReturnType<typeof createSocketHub>;
+  io: Server;
+  hub: Hub;
   store: JsonStore;
+  auth: AuthService;
   listen: (port?: number) => Promise<number>;
   close: () => Promise<void>;
 }
 
-export function createServer(env: NodeJS.ProcessEnv = process.env): TvboxServer {
+export function createServer(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { verifyGoogle?: GoogleVerifier; tvTimeoutMs?: number } = {},
+): TvboxServer {
   const config = loadConfig(env);
   const store = new JsonStore(config.dataDir);
-  const authenticate = createGoogleAuthenticator(
-    config.googleClientId,
-    config.ownerEmail,
-    (email) => store.isGuest(email),
-  );
-
-  const app = createApp(config);
+  const auth = new AuthService(config, store, opts.verifyGoogle ?? createGoogleVerifier(config.googleClientId));
+  let hub: Hub | null = null;
+  const app = createApp(config, auth, () => hub);
   const httpServer = http.createServer(app);
-  const io = createSocketHub(httpServer, { config, store, authenticate });
+  hub = createHub(httpServer, { config, store, auth, tvTimeoutMs: opts.tvTimeoutMs });
+  const io = hub.io;
 
   return {
     config,
     httpServer,
     io,
+    hub,
     store,
+    auth,
     listen: (port = config.port) =>
       new Promise<number>((resolve, reject) => {
         httpServer.once('error', reject);
         httpServer.listen(port, () => {
           httpServer.removeListener('error', reject);
-          resolve(port);
+          const addr = httpServer.address();
+          resolve(typeof addr === 'object' && addr ? addr.port : port);
         });
       }),
     close: () =>
-      new Promise<void>((resolve, reject) => {
-        io.close(() => {
-          httpServer.close((err) => (err ? reject(err) : resolve()));
-        });
+      new Promise<void>((resolve) => {
+        io.close(() => resolve());
       }),
   };
 }
 
 if (require.main === module) {
+  loadDotEnv();
   const server = createServer();
   server
     .listen()
     .then((port) => {
-      console.log(`[tvbox-backend] listening on :${port}`);
-      console.log(`[tvbox-backend] owner=${server.config.ownerEmail}`);
-      console.log(`[tvbox-backend] static=${server.config.staticDir}`);
+      const c = server.config;
+      console.log(`[tvbox] listening on :${port} (${c.publicUrl})`);
+      console.log(`[tvbox] owner=${c.ownerEmail || c.ownerUsername || '(first account)'} google=${c.googleClientId ? 'on' : 'OFF'} turn=${c.turnSecret ? 'on' : 'off'}`);
     })
     .catch((err) => {
-      console.error('[tvbox-backend] failed to start', err);
+      console.error('[tvbox] failed to start', err);
       process.exit(1);
     });
+  const shutdown = () => {
+    void server.close().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }

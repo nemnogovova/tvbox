@@ -1,4 +1,2 @@
-declare module 'webtorrent' {
-  const WebTorrent: new (opts?: Record<string, unknown>) => unknown;
-  export default WebTorrent;
-}
+// Удалено в TVBox 2.0 — этот файл больше не используется и его можно удалить.
+export {};
