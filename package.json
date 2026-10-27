@@ -1,6 +1,6 @@
 {
   "name": "tvbox",
-  "version": "3.0.2",
+  "version": "3.0.9",
   "private": true,
   "description": "Smart TV client + remote control + signaling server (monorepo)",
   "workspaces": [
@@ -18,7 +18,7 @@
     "dev:backend": "npm run dev -w @tvbox/backend",
     "dev:remote": "npm run dev -w @tvbox/remote-client",
     "dev:tv": "npm run dev -w @tvbox/tv-client",
-    "dist:tv": "npm run build:shared && npm run dist -w @tvbox/tv-client",
+    "dist:tv": "npm run build:shared && node scripts/dist-tv.mjs",
     "apk": "node scripts/build-apk.mjs",
     "version:bump": "node scripts/version.mjs bump",
     "publish:apps": "node scripts/publish-release.mjs"

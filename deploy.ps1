@@ -2,24 +2,27 @@
   Деплой сервера TVBox на VPS одной командой:
       powershell -ExecutionPolicy Bypass -File .\deploy.ps1
 
-  Скрипт загружает готовый бандл (deploy\tvbox-server.tgz) по SSH и запускает
-  на сервере deploy/server-setup.sh (Docker, Caddy с HTTPS, coturn, .env).
+  Скрипт собирает свежий бандл из исходников (сервер + веб-пульт), загружает его
+  по SSH и запускает на сервере deploy/server-setup.sh (Docker, Caddy с HTTPS, coturn, .env).
   Пароль root спросит ssh — один раз за запуск. Если у вас есть SSH-ключ
   (~/.ssh/id_ed25519.pub или id_rsa.pub), он будет добавлен на сервер,
   и следующие деплои пройдут без пароля.
 
-  -Rebuild  — пересобрать бандл из исходников (нужен Node.js 20+).
+  -NoBuild  — не пересобирать, залить уже готовый deploy\tvbox-server.tgz.
 #>
 param(
   [string]$Server = "109.107.185.185",
   [string]$User = "root",
-  [switch]$Rebuild
+  [switch]$NoBuild,
+  [switch]$Rebuild  # оставлен для совместимости: сборка теперь идёт всегда
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 $bundle = Join-Path $PSScriptRoot "deploy\tvbox-server.tgz"
 
-if ($Rebuild -or -not (Test-Path $bundle)) {
+# Always build from the current sources: an old bundle means an old server and an old web remote,
+# and new remotes (APK) then send commands the server silently drops.
+if (-not $NoBuild -or -not (Test-Path $bundle)) {
   Write-Host "==> Сборка бандла" -ForegroundColor Cyan
   npm install --no-audit --no-fund; if ($LASTEXITCODE) { throw "npm install failed" }
   npm run build:shared; if ($LASTEXITCODE) { throw "build failed" }

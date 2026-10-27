@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 const external = ['electron', 'webtorrent', 'sql.js', 'ffmpeg-static', 'bufferutil', 'utf-8-validate', 'utp-native'];
 
 await build({
-  entryPoints: ['electron/main.ts', 'electron/preload.ts'],
+  entryPoints: ['electron/main.ts', 'electron/preload.ts', 'electron/youtube-preload.ts'],
   bundle: true,
   platform: 'node',
   target: 'node20',

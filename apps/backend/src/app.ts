@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import express, { type Express, type Request, type Response } from 'express';
-import { Events, type ControlCommand, type ReleaseInfo, type ReleasePlatform, type ReleasesManifest, type User } from '@tvbox/shared';
+import { Events, PROTOCOL_VERSION, type ControlCommand, type ReleaseInfo, type ReleasePlatform, type ReleasesManifest, type User } from '@tvbox/shared';
 import type { BackendConfig } from './config';
 import type { AuthService } from './auth';
 import type { Hub } from './hub';
@@ -94,6 +94,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
       passwordAuth: true,
       publicUrl: config.publicUrl,
       turn: Boolean(config.turnSecret && config.turnHost),
+      protocol: PROTOCOL_VERSION,
     });
   });
 

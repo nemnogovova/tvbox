@@ -13,6 +13,9 @@ export type CommandCategory =
   | 'power'
   | 'music'
   | 'music-admin'
+  | 'apps'
+  | 'apps-admin'
+  | 'input'
   | 'admin';
 
 /** What a guest may do. The owner may do everything. */
@@ -28,6 +31,10 @@ const GUEST_ALLOWED: Record<CommandCategory, boolean> = {
   power: false,
   music: true,
   'music-admin': false,
+  // guests may start / close the listed programs; free mouse & keyboard control is owner-only
+  apps: true,
+  'apps-admin': false,
+  input: false,
   admin: false,
 };
 
@@ -67,6 +74,21 @@ export const CATEGORY_BY_EVENT: Record<string, CommandCategory> = {
   [Events.UPLOAD_BEGIN]: 'widgets',
   [Events.UPLOAD_CHUNK]: 'widgets',
   [Events.UPLOAD_END]: 'widgets',
+  [Events.APPS_LIST]: 'apps',
+  [Events.APPS_LAUNCH]: 'apps',
+  [Events.APPS_CLOSE]: 'apps',
+  [Events.APPS_FOCUS]: 'apps',
+  [Events.APPS_WINDOW]: 'apps',
+  [Events.APPS_ADD]: 'apps-admin',
+  [Events.APPS_UPDATE]: 'apps-admin',
+  [Events.APPS_REMOVE]: 'apps-admin',
+  [Events.INPUT]: 'input',
+  [Events.CATALOG_HOME]: 'catalog',
+  [Events.CATALOG_BROWSE]: 'catalog',
+  [Events.CATALOG_DETAILS]: 'catalog',
+  [Events.TORRENT_SEARCH]: 'torrent',
+  [Events.INDEXER_TEST]: 'settings',
+  [Events.YOUTUBE_OPEN]: 'control',
   [Events.ACCOUNT_UPDATE]: 'admin',
   [Events.ACCOUNT_DELETE]: 'admin',
   [Events.REGISTRATION_SET]: 'admin',

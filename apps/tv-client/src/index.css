@@ -23,11 +23,6 @@ body,
   user-select: none;
 }
 
-body.hide-cursor,
-body.hide-cursor * {
-  cursor: none !important;
-}
-
 .tabular {
   font-variant-numeric: tabular-nums;
 }

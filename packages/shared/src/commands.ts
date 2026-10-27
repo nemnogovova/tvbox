@@ -1,3 +1,4 @@
+import type { NavKey, TorrentMeta } from './features';
 import type { PlayRequest, IdleSettings, MediaItem, PowerAction, RepeatMode, TvSettings, MusicSourceKind, MusicView } from './types';
 
 export type ControlCommand =
@@ -24,7 +25,11 @@ export type ControlCommand =
   | { type: 'QUEUE_SHUFFLE' }
   | { type: 'REPEAT'; mode: RepeatMode }
   | { type: 'PREVIOUS' }
-  | { type: 'NEXT' };
+  | { type: 'NEXT' }
+  /** D-pad: goes to YouTube TV, the program in front or the TVBox screen */
+  | { type: 'NAV'; key: NavKey }
+  /** Type text into whatever has focus on the TV (YouTube search, a program) */
+  | { type: 'TEXT'; text: string };
 
 export type ControlType = ControlCommand['type'];
 
@@ -34,9 +39,13 @@ export interface TorrentAddPayload {
   torrentBase64?: string;
   /** Path of a .torrent file on the TV PC */
   torrentPath?: string;
+  /** Indexer download link (Jackett / Prowlarr); resolved by the TV */
+  link?: string;
   name?: string;
   /** Start streaming as soon as possible */
   play?: boolean;
+  /** Catalog item the torrent belongs to (correct title / poster right away) */
+  meta?: TorrentMeta;
 }
 
 export interface TorrentRemovePayload {
@@ -68,6 +77,8 @@ export interface MediaApplyTmdbPayload {
 
 export interface FsListPayload {
   path?: string;
+  /** apps – start from Program Files / games folders and show programs */
+  purpose?: 'media' | 'apps';
 }
 
 export interface PowerPayload {

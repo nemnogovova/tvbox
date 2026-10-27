@@ -5,7 +5,33 @@ import { mediaKindOfFile, type FsEntry, type FsEntryKind, type FsListResult } fr
 
 export function classify(name: string): FsEntryKind {
   if (/\.torrent$/i.test(name)) return 'torrent';
+  if (/\.(exe|lnk|url|bat|cmd)$/i.test(name)) return 'app';
   return mediaKindOfFile(name) ?? 'other';
+}
+
+function appRoots(): FsEntry[] {
+  const out: FsEntry[] = [];
+  const add = (p: string | undefined, name: string) => {
+    if (!p) return;
+    try {
+      if (fs.statSync(p).isDirectory() && !out.some((e) => e.path.toLowerCase() === p.toLowerCase())) out.push({ name, path: p, kind: 'dir' });
+    } catch {
+      // missing
+    }
+  };
+  const home = os.homedir();
+  add(path.join(home, 'Desktop'), 'Рабочий стол');
+  add(path.join(home, 'Downloads'), 'Загрузки');
+  add(process.env.ProgramFiles, 'Program Files');
+  add(process.env['ProgramFiles(x86)'], 'Program Files (x86)');
+  add(process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'), 'Программы пользователя');
+  for (const steam of [process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)']!, 'Steam', 'steamapps', 'common'), 'D:\\SteamLibrary\\steamapps\\common', 'E:\\SteamLibrary\\steamapps\\common']) {
+    add(steam || undefined, `Игры Steam${steam && /^[A-Z]:\\SteamLibrary/i.test(steam) ? ` (${steam.slice(0, 2)})` : ''}`);
+  }
+  add('C:\\Games', 'C:\\Games');
+  add('D:\\Games', 'D:\\Games');
+  for (let c = 67; c <= 90; c++) add(`${String.fromCharCode(c)}:\\`, `Диск ${String.fromCharCode(c)}:`);
+  return out;
 }
 
 function roots(extra: string[]): FsEntry[] {
@@ -34,9 +60,9 @@ function roots(extra: string[]): FsEntry[] {
   return out;
 }
 
-export async function listDirectory(input: string | undefined, favorites: string[]): Promise<FsListResult> {
+export async function listDirectory(input: string | undefined, favorites: string[], purpose: 'media' | 'apps' = 'media'): Promise<FsListResult> {
   const dir = input ? path.resolve(input) : '';
-  if (!dir) return { path: '', parent: null, entries: roots(favorites) };
+  if (!dir) return { path: '', parent: null, entries: purpose === 'apps' && process.platform === 'win32' ? appRoots() : roots(favorites) };
   const parentDir = path.dirname(dir);
   const parent = parentDir === dir ? '' : parentDir;
   try {
@@ -59,7 +85,7 @@ export async function listDirectory(input: string | undefined, favorites: string
         entries.push({ name: e.name, path: full, kind: classify(e.name), size, modifiedAt });
       }
     }
-    const rank = (k: FsEntryKind) => (k === 'dir' ? 0 : k === 'other' ? 2 : 1);
+    const rank = (k: FsEntryKind) => (k === 'dir' ? 0 : purpose === 'apps' ? (k === 'app' ? 1 : 2) : k === 'other' || k === 'app' ? 2 : 1);
     entries.sort((a, b) => rank(a.kind) - rank(b.kind) || a.name.localeCompare(b.name, 'ru', { numeric: true }));
     return { path: dir, parent, entries };
   } catch (e) {

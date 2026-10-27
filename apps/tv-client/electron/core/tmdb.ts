@@ -1,6 +1,7 @@
 import type { TmdbResult } from '@tvbox/shared';
 
-const API = 'https://api.themoviedb.org/3';
+// TVBOX_TMDB_API: point the client at another TMDb-compatible endpoint (end-to-end tests)
+const API = process.env.TVBOX_TMDB_API || 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
 
 interface RawResult {
@@ -34,17 +35,26 @@ export class TmdbClient {
 
   constructor(
     private apiKey: string,
-    private language = 'ru-RU',
+    private lang = 'ru-RU',
   ) {}
 
   configure(apiKey: string, language: string): void {
-    if (apiKey !== this.apiKey || language !== this.language) this.cache.clear();
+    if (apiKey !== this.apiKey || language !== this.lang) this.cache.clear();
     this.apiKey = apiKey.trim();
-    this.language = language || 'ru-RU';
+    this.lang = language || 'ru-RU';
   }
 
   get enabled(): boolean {
     return Boolean(this.apiKey);
+  }
+
+  get language(): string {
+    return this.lang;
+  }
+
+  /** Raw TMDb API call (cached). */
+  request<T>(pathname: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
+    return this.get<T>(pathname, params);
   }
 
   private async get<T>(pathname: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
@@ -53,7 +63,7 @@ export class TmdbClient {
     // v4 "API Read Access Token" (JWT) vs classic v3 api_key
     if (this.apiKey.startsWith('eyJ')) headers.Authorization = `Bearer ${this.apiKey}`;
     else url.searchParams.set('api_key', this.apiKey);
-    url.searchParams.set('language', this.language);
+    if (!('language' in params)) url.searchParams.set('language', this.lang);
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
     const key = url.toString();
     if (this.cache.has(key)) return this.cache.get(key) as T;
@@ -64,8 +74,10 @@ export class TmdbClient {
       if (res.status === 401) throw new Error('tmdb_unauthorized');
       if (!res.ok) throw new Error(`tmdb_${res.status}`);
       const body = (await res.json()) as T;
-      if (this.cache.size > 500) this.cache.clear();
+      if (this.cache.size > 800) this.cache.clear();
       this.cache.set(key, body);
+      // lists change during the day: forget them after 30 min (details stay)
+      if (/\/(trending|discover|popular|top_rated|now_playing|on_the_air|search)/.test(pathname)) setTimeout(() => this.cache.delete(key), 30 * 60 * 1000).unref?.();
       return body;
     } finally {
       clearTimeout(t);

@@ -1,3 +1,4 @@
+import type { AppsState, IndexerSettings, IndexerStatus, YoutubeState } from './features';
 // ---------------------------------------------------------------------------
 // Users & roles
 // ---------------------------------------------------------------------------
@@ -303,7 +304,10 @@ export interface TvSettings {
   autostart: boolean;
   /** Language for TMDb metadata, e.g. ru-RU */
   language: string;
+  /** Torrent search for the catalog (Jackett / Prowlarr) */
+  indexer?: IndexerSettings | null;
   /** Read-only info reported by the TV */
+  indexerStatus?: IndexerStatus;
   youtubeSignedIn?: boolean;
   version?: string;
 }
@@ -312,7 +316,7 @@ export interface TvSettings {
 // Filesystem browser
 // ---------------------------------------------------------------------------
 
-export type FsEntryKind = 'dir' | 'video' | 'audio' | 'image' | 'torrent' | 'other';
+export type FsEntryKind = 'dir' | 'video' | 'audio' | 'image' | 'torrent' | 'app' | 'other';
 
 export interface FsEntry {
   name: string;
@@ -394,6 +398,8 @@ export interface SyncPayload {
   torrents: TorrentInfo[];
   idle: IdleSettings | null;
   admin: AdminState | null;
+  apps?: AppsState | null;
+  youtube?: YoutubeState | null;
 }
 
 export type PowerAction = 'sleep' | 'shutdown' | 'reboot' | 'restart-app';

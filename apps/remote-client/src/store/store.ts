@@ -3,9 +3,12 @@ import { io, type Socket } from 'socket.io-client';
 import {
   EMPTY_PLAYER_STATE,
   Events,
+  PROTOCOL_VERSION,
   type Ack,
   type AdminState,
+  type AppsState,
   type AuthResult,
+  type InputEvent,
   type ControlCommand,
   type IdleSettings,
   type LinkStartResult,
@@ -16,6 +19,7 @@ import {
   type SyncPayload,
   type TorrentInfo,
   type User,
+  type YoutubeState,
 } from '@tvbox/shared';
 import { getPref, getServerUrl, getToken, setServerUrl, setToken } from '../lib/config';
 import { startBackgroundControl, stopBackgroundControl } from '../lib/native';
@@ -58,6 +62,12 @@ export interface StoreState {
   kickedReason: string | null;
   /** Music services connected to the TV (null = not loaded yet) */
   musicSources: MusicSource[] | null;
+  /** Programs open on the TV PC (app launcher) */
+  apps: AppsState | null;
+  /** YouTube TV on the TV */
+  youtube: YoutubeState | null;
+  /** Protocol version of the server (null = unknown yet). Older than ours → features are missing. */
+  serverProtocol: number | null;
 }
 
 const initial: StoreState = {
@@ -78,6 +88,9 @@ const initial: StoreState = {
   toasts: [],
   kickedReason: null,
   musicSources: null,
+  apps: null,
+  youtube: null,
+  serverProtocol: null,
 };
 
 export const useStore = create<StoreState>(() => initial);
@@ -129,6 +142,17 @@ const ERROR_TEXT: Record<string, string> = {
   unsupported_type: 'Такой формат файла не поддерживается',
   too_large: 'Файл слишком большой',
   bad_youtube_link: 'Не похоже на ссылку YouTube',
+  server_outdated: 'Сервер TVBox устарел — на ПК запустите deploy.ps1',
+  tv_outdated: 'На телевизоре старая версия TVBox — обновите её в настройках',
+  no_tmdb_key: 'Для каталога нужен ключ TMDb — добавьте его в настройках ТВ',
+  tmdb_unauthorized: 'TMDb отклонил ключ — проверьте его в настройках',
+  no_indexer: 'Поиск раздач не настроен: установите Jackett или Prowlarr на ПК с TVBox',
+  not_a_torrent: 'Индексатор вернул не торрент-файл',
+  download_failed: 'Не удалось скачать торрент у индексатора',
+  launch_failed: 'Программа не запустилась',
+  window_fixed_size: 'У этого окна фиксированный размер — растянуть нельзя',
+  nothing_to_type_into: 'Некуда вводить: откройте YouTube или программу',
+  torrent_not_ready: 'Торрент ещё готовится',
 };
 export const errorText = (code?: string) => (code && ERROR_TEXT[code]) || code || 'Ошибка';
 
@@ -197,6 +221,7 @@ export function connect(): void {
   s.on('connect', () => {
     set({ conn: 'online' });
     authenticate();
+    void checkServer(url);
   });
   s.on('disconnect', () => set({ conn: 'offline' }));
   s.on('connect_error', () => set({ conn: 'offline' }));
@@ -210,8 +235,12 @@ export function connect(): void {
       torrents: p.torrents || [],
       idle: p.idle,
       admin: p.admin,
+      apps: p.apps ?? null,
+      youtube: p.youtube ?? null,
     }),
   );
+  s.on(Events.APPS_STATE, (a: AppsState) => set({ apps: a }));
+  s.on(Events.YOUTUBE_STATE, (y: YoutubeState) => set({ youtube: y }));
   s.on(Events.PRESENCE, (p: PresenceInfo) => set({ presence: p }));
   s.on(Events.PLAYER_STATE, (p: PlayerState) => {
     const o = get().optimistic;
@@ -234,6 +263,19 @@ export function connect(): void {
     if (p?.token && linkWaiter) linkWaiter(p.token);
   });
 }
+
+/** Which protocol the server speaks (an old one silently drops new commands). */
+async function checkServer(url: string): Promise<void> {
+  try {
+    const res = await fetch(`${url}/api/config`, { cache: 'no-store' });
+    const body = (await res.json()) as { protocol?: number };
+    set({ serverProtocol: Number(body.protocol) || 1 });
+  } catch {
+    // offline — check again on the next connect
+  }
+}
+
+export const serverOutdated = (s: StoreState) => s.serverProtocol !== null && s.serverProtocol < PROTOCOL_VERSION;
 
 // Reconnect instantly when the phone wakes up / the app comes back from background.
 // A WebView that was frozen often still believes its websocket is open, so after a
@@ -431,3 +473,35 @@ export function livePosition(s: StoreState): number {
 }
 
 export const isOwner = (s: StoreState) => s.user?.role === 'owner';
+
+// ---------------------------------------------------------------------------
+// Remote input (touchpad / keyboard): batched, fire-and-forget
+// ---------------------------------------------------------------------------
+
+let inputQueue: InputEvent[] = [];
+let inputTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushInput(): void {
+  inputTimer = null;
+  if (!inputQueue.length) return;
+  const events = inputQueue;
+  inputQueue = [];
+  // pure mouse movement goes "volatile": when the link is busy, stale moves are dropped instead of
+  // piling up; clicks / keys / text are always delivered
+  if (events.every((e) => e.t === 'move')) socket?.volatile.emit(Events.INPUT, { events });
+  else socket?.emit(Events.INPUT, { events });
+}
+
+export function sendInput(e: InputEvent, immediate = false): void {
+  const last = inputQueue[inputQueue.length - 1];
+  if (e.t === 'move' && last?.t === 'move') {
+    last.dx += e.dx;
+    last.dy += e.dy;
+  } else inputQueue.push(e);
+  if (immediate || e.t !== 'move') {
+    if (inputTimer) clearTimeout(inputTimer);
+    flushInput();
+  } else if (!inputTimer) inputTimer = setTimeout(flushInput, 16);
+}
+
+export const youtubeOpen = (s: StoreState) => s.player.source === 'youtube' || !!s.youtube?.open;

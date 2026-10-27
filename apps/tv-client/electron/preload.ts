@@ -29,6 +29,8 @@ const api: TvBridge = {
   onSignal: on('tv:signal'),
   onCastStop: on('cast:stop'),
   onToast: on('tv:toast'),
+  onActivity: on('tv:activity'),
+  onLaunching: on('tv:launching'),
 };
 
 contextBridge.exposeInMainWorld('tvbox', api);

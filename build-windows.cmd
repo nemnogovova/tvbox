@@ -16,6 +16,8 @@ call npm install --no-audit --no-fund || goto :err
 echo ==^> tests
 call npm test || goto :err
 echo ==^> TVBox installer for Windows
+rem a TVBox started from the build folder locks app.asar: close it first
+powershell -NoProfile -Command "Get-Process TVBox -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*\apps\tv-client\release\*' } | Stop-Process -Force -ErrorAction SilentlyContinue"
 call npm run dist:tv || goto :err
 echo.
 echo Installer: apps\tv-client\release
@@ -29,6 +31,7 @@ call node scripts\publish-release.mjs || echo Publishing failed: run deploy.ps1 
 
 :done
 echo.
+call node scripts\check-server.mjs
 echo DONE
 pause
 exit /b 0

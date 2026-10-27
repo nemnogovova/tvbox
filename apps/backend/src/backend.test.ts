@@ -278,6 +278,36 @@ describe('socket hub', () => {
     expect(late.sync.presence.tvConnected).toBe(true);
   });
 
+  it('relays touchpad input (owner only, no acks) and caches app / YouTube state', async () => {
+    const tv = await pairedTv();
+    const got: unknown[] = [];
+    tv.on(Events.INPUT, (p: unknown) => got.push(p));
+    tv.on(Events.APPS_LAUNCH, (_p: unknown, ack: (r: unknown) => void) => ack({ ok: true }));
+    const { s: owner } = await remote('g-owner');
+    const { s: guest } = await remote('g-guest');
+    owner.emit(Events.INPUT, { events: [{ t: 'move', dx: 5, dy: -3 }, { t: 'click' }] });
+    guest.emit(Events.INPUT, { events: [{ t: 'click' }] });
+    owner.emit(Events.INPUT, 'garbage');
+    await new Promise((r) => setTimeout(r, 120));
+    expect(got).toEqual([{ events: [{ t: 'move', dx: 5, dy: -3 }, { t: 'click' }] }]);
+    // guests may still start the listed programs
+    expect(await emitAck(guest, Events.APPS_LAUNCH, { id: 'jackbox' })).toEqual({ ok: true });
+
+    tv.emit(Events.APPS_STATE, { windows: [{ hwnd: '1', title: 'Jackbox', pid: 2 }], tvboxForeground: false });
+    tv.emit(Events.YOUTUBE_STATE, { open: true, mode: 'browse', signedIn: true });
+    await new Promise((r) => setTimeout(r, 60));
+    const late = await remote('g-owner');
+    expect(late.sync.apps?.windows[0].title).toBe('Jackbox');
+    expect(late.sync.youtube?.signedIn).toBe(true);
+  });
+
+  it('answers events it does not know (newer remote) with server_outdated', async () => {
+    const { s: owner } = await remote('g-owner');
+    expect(await emitAck(owner, 'future:feature', { x: 1 })).toEqual({ ok: false, error: 'server_outdated' });
+    const cfg = await request(srv.httpServer).get('/api/config');
+    expect(cfg.body.protocol).toBeGreaterThanOrEqual(2);
+  });
+
   it('ignores broadcasts from non-TV sockets', async () => {
     const { s: owner } = await remote('g-owner');
     const { s: guest } = await remote('g-guest');

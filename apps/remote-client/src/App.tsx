@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store/store';
 import { AuthScreen, Backdrop } from './components/AuthScreen';
 import { LinkPage } from './components/LinkPage';
-import { Shell, useIsDesktop, type Tab } from './components/Shell';
+import { MORE_TABS, Shell, useIsDesktop, type Tab } from './components/Shell';
 import { RemotePanel } from './components/RemotePanel';
 import { GlobalInputs } from './components/GlobalInputs';
-import { Spinner, Toasts } from './components/ui';
+import { Segmented, Spinner, Toasts } from './components/ui';
 import { LibraryPage } from './pages/LibraryPage';
 import { DownloadsPage } from './pages/DownloadsPage';
 import { CastPage } from './pages/CastPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { MusicPage } from './pages/MusicPage';
+import { CatalogPage } from './pages/CatalogPage';
+import { AppsPage } from './pages/AppsPage';
 import { getPref, setPref } from './lib/config';
 
 function usePath(): string {
@@ -51,29 +53,62 @@ export default function App() {
 function Main() {
   const desktop = useIsDesktop();
   const [tab, setTabState] = useState<Tab>(() => getPref<Tab>('tab', 'remote'));
+  const [lastMore, setLastMore] = useState<Tab>(() => getPref<Tab>('tabMore', 'settings'));
   const setTab = (t: Tab) => {
     setTabState(t);
     setPref('tab', t);
+    if (MORE_TABS.includes(t)) {
+      setLastMore(t);
+      setPref('tabMore', t);
+    }
+    document.querySelector('main')?.scrollTo({ top: 0 });
   };
-  const effective: Tab = desktop && tab === 'remote' ? 'library' : tab;
+  const effective: Tab = desktop && tab === 'remote' ? 'catalog' : tab;
+  const moreSwitch = !desktop && MORE_TABS.includes(effective) && (
+    <div className="mb-4">
+      <Segmented<Tab>
+        value={effective}
+        onChange={setTab}
+        options={[
+          { value: 'downloads', label: 'Загрузки' },
+          { value: 'cast', label: 'Трансляция' },
+          { value: 'settings', label: 'Настройки' },
+        ]}
+      />
+    </div>
+  );
 
   return (
     <>
       <Shell
         tab={effective}
         onTab={setTab}
+        lastMore={lastMore}
         remote={<RemotePanel compact={!desktop} />}
         content={
-          effective === 'library' ? (
+          effective === 'catalog' ? (
+            <CatalogPage onWatch={() => !desktop && setTab('remote')} onOpenSettings={() => setTab('settings')} />
+          ) : effective === 'apps' ? (
+            <AppsPage />
+          ) : effective === 'library' ? (
             <LibraryPage />
           ) : effective === 'downloads' ? (
-            <DownloadsPage />
+            <>
+              {moreSwitch}
+              <DownloadsPage />
+            </>
           ) : effective === 'cast' ? (
-            <CastPage />
+            <>
+              {moreSwitch}
+              <CastPage />
+            </>
           ) : effective === 'music' ? (
             <MusicPage />
           ) : effective === 'settings' ? (
-            <SettingsPage onOpenMusic={() => setTab('music')} />
+            <>
+              {moreSwitch}
+              <SettingsPage onOpenMusic={() => setTab('music')} />
+            </>
           ) : null
         }
       />

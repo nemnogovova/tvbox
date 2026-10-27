@@ -24,6 +24,7 @@ function defaults(): TvConfig {
     downloadDir: path.join(os.homedir(), 'Videos', 'TVBox'),
     autostart: true,
     language: 'ru-RU',
+    indexer: null,
   };
 }
 
@@ -63,7 +64,7 @@ export class ConfigStore {
   }
 
   settings(): TvSettings {
-    const { tmdbApiKey, mediaDirs, downloadDir, autostart, language } = this.value;
-    return { tmdbApiKey, mediaDirs, downloadDir, autostart, language };
+    const { tmdbApiKey, mediaDirs, downloadDir, autostart, language, indexer } = this.value;
+    return { tmdbApiKey, mediaDirs, downloadDir, autostart, language, indexer: indexer || null };
   }
 }

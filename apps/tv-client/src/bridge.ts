@@ -107,6 +107,10 @@ export interface TvBridge {
   onSignal: (cb: (p: { event: string; msg: SignalMessage }) => void) => () => void;
   onCastStop: (cb: () => void) => () => void;
   onToast: (cb: (t: { message: string; kind?: string }) => void) => () => void;
+  /** The mouse moved (tracked by the main process) */
+  onActivity: (cb: () => void) => () => void;
+  /** A program is starting from the remote (null when it is on screen / failed) */
+  onLaunching: (cb: (a: { name: string; icon?: string } | null) => void) => () => void;
 }
 
 declare global {

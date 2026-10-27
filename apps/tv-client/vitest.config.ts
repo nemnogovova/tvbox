@@ -5,5 +5,5 @@ export default defineConfig({
   resolve: {
     alias: { '@tvbox/shared': fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)) },
   },
-  test: { include: ['electron/core/core.test.ts'], environment: 'node' },
+  test: { include: ['electron/core/core.test.ts', 'electron/core/catalog.test.ts', 'electron/core/indexer.test.ts'], environment: 'node' },
 });

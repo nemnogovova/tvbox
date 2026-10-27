@@ -77,6 +77,12 @@ export class Connection extends EventEmitter {
     void this.fetchPublicUrl();
 
     for (const [evt, h] of this.handlers) s.on(evt, this.wrap(evt, h));
+    // a remote newer than this TV client: answer instead of letting it wait for a timeout
+    s.onAny((event: string, ...args: unknown[]) => {
+      if (this.handlers.has(event)) return;
+      const ack = args[args.length - 1];
+      if (typeof ack === 'function') (ack as (r: unknown) => void)({ ok: false, error: 'tv_outdated' });
+    });
 
     s.on('connect', () => this.authenticate());
     s.on('disconnect', (reason) => {

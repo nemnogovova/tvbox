@@ -48,6 +48,29 @@ export const Events = {
   YOUTUBE_LOGIN: 'youtube:login', // owner -> tv (open Google sign-in for YouTube on the TV)
   YOUTUBE_LOGOUT: 'youtube:logout', // owner -> tv
 
+  // ---- app launcher / input ----
+  APPS_LIST: 'apps:list', // remote -> tv (ack: AppEntry[])
+  APPS_LAUNCH: 'apps:launch', // {id}
+  APPS_CLOSE: 'apps:close', // {hwnd?, appId?, force?}
+  APPS_FOCUS: 'apps:focus', // {hwnd} | {tvbox: true}
+  APPS_WINDOW: 'apps:window', // {hwnd, action: 'fullscreen' | 'maximize' | 'minimize'}
+  APPS_ADD: 'apps:add', // owner: {path, name?}
+  APPS_UPDATE: 'apps:update', // owner: AppUpdatePayload
+  APPS_REMOVE: 'apps:remove', // owner: {id}
+  APPS_STATE: 'apps:state', // tv -> remotes (AppsState)
+  INPUT: 'input', // remote -> tv, no ack (InputPayload)
+
+  // ---- catalog (TMDb) + torrent search ----
+  CATALOG_HOME: 'catalog:home', // ack: CatalogHome
+  CATALOG_BROWSE: 'catalog:browse', // ack: CatalogPage
+  CATALOG_DETAILS: 'catalog:details', // ack: CatalogDetails
+  TORRENT_SEARCH: 'torrent:search', // ack: TorrentSearchResult
+  INDEXER_TEST: 'indexer:test', // owner: IndexerSettings (ack: {count})
+
+  // ---- YouTube TV ----
+  YOUTUBE_STATE: 'youtube:state', // tv -> remotes (YoutubeState)
+  YOUTUBE_OPEN: 'youtube:open', // remote -> tv: open YouTube TV ({videoId?})
+
   // ---- music services ----
   MUSIC_SOURCES: 'music:sources', // remote -> tv (ack: MusicSource[])
   MUSIC_SOURCES_CHANGED: 'music:sources:changed', // tv -> remotes (MusicSource[])
@@ -118,7 +141,24 @@ export const TV_REQUEST_EVENTS = [
   Events.UPLOAD_BEGIN,
   Events.UPLOAD_CHUNK,
   Events.UPLOAD_END,
+  Events.APPS_LIST,
+  Events.APPS_LAUNCH,
+  Events.APPS_CLOSE,
+  Events.APPS_FOCUS,
+  Events.APPS_WINDOW,
+  Events.APPS_ADD,
+  Events.APPS_UPDATE,
+  Events.APPS_REMOVE,
+  Events.CATALOG_HOME,
+  Events.CATALOG_BROWSE,
+  Events.CATALOG_DETAILS,
+  Events.TORRENT_SEARCH,
+  Events.INDEXER_TEST,
+  Events.YOUTUBE_OPEN,
 ] as const;
+
+/** High-frequency remote -> TV events relayed without acknowledgement. */
+export const TV_STREAM_EVENTS = [Events.INPUT] as const;
 
 /** Events the TV pushes that the server caches and broadcasts to remotes. */
 export const TV_BROADCAST_EVENTS = [
@@ -128,6 +168,8 @@ export const TV_BROADCAST_EVENTS = [
   Events.IDLE,
   Events.TOAST,
   Events.MUSIC_SOURCES_CHANGED,
+  Events.APPS_STATE,
+  Events.YOUTUBE_STATE,
 ] as const;
 
 export const WEBRTC_EVENTS = [

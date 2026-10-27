@@ -18,7 +18,8 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { Events, normalizeLinkCode, type PowerAction, type TvSettings } from '@tvbox/shared';
+import { Events, normalizeLinkCode, type IndexerKind, type IndexerStatus, type PowerAction, type TvSettings } from '@tvbox/shared';
+import { Clapperboard, Download, PlugZap } from 'lucide-react';
 import { act, changeServer, isOwner, request, signOut, useStore, errorText, toast } from '../store/store';
 import { Section, Spinner, Toggle, cx } from '../components/ui';
 import { navigate } from '../components/LinkPage';
@@ -26,7 +27,7 @@ import { hostOf } from '../components/AuthScreen';
 import { IdleEditor } from '../components/IdleEditor';
 import { AccessCard, AccountCard, AppsCard, TvExtrasCard } from '../components/AccountSettings';
 import { getPref, setPref } from '../lib/config';
-import { isNative, setVolumeKeysEnabled, startBackgroundControl, stopBackgroundControl } from '../lib/native';
+import { isNative, openExternal, setVolumeKeysEnabled, startBackgroundControl, stopBackgroundControl } from '../lib/native';
 import { getToken } from '../lib/config';
 import { googleSignOut } from '../lib/google';
 
@@ -41,6 +42,7 @@ export function SettingsPage({ onOpenMusic }: { onOpenMusic?: () => void }) {
       <LinkDeviceCard />
       {owner && <AccessCard />}
       {owner && <TvSettingsCard />}
+      {owner && <IndexerCard />}
       {owner && <IdleEditor />}
       <AppsCard />
       <AppCard />
@@ -323,5 +325,149 @@ function AppCard() {
       )}
 
     </Section>
+  );
+}
+
+/** Torrent search for the catalog: Jackett / Prowlarr (found automatically when installed on the TV PC). */
+function IndexerCard() {
+  const tvOnline = useStore((st) => st.presence.tvConnected);
+  const [s, setS] = useState<TvSettings | null>(null);
+  const [status, setStatus] = useState<IndexerStatus | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [manual, setManual] = useState(false);
+  const [kind, setKind] = useState<IndexerKind>('jackett');
+  const [url, setUrl] = useState('');
+  const [key, setKey] = useState('');
+
+  const test = async () => {
+    setTesting(true);
+    const r = await request<IndexerStatus>(Events.INDEXER_TEST, {}, 45000);
+    setTesting(false);
+    if (r.ok && r.data) setStatus(r.data);
+  };
+
+  useEffect(() => {
+    if (!tvOnline) return;
+    void request<TvSettings>(Events.TV_SETTINGS_GET).then((r) => {
+      if (!r.ok || !r.data) return;
+      setS(r.data);
+      setStatus(r.data.indexerStatus || null);
+      if (r.data.indexer) {
+        setKind(r.data.indexer.kind);
+        setUrl(r.data.indexer.url);
+        setKey(r.data.indexer.apiKey);
+        setManual(true);
+      }
+      if (r.data.indexerStatus?.mode !== 'none') void test();
+    });
+  }, [tvOnline]);
+  if (!tvOnline || !s) return null;
+
+  const save = async () => {
+    setTesting(true);
+    const check = await request<IndexerStatus>(Events.INDEXER_TEST, { kind, url, apiKey: key }, 45000);
+    if (!check.ok) {
+      setTesting(false);
+      toast(errorText(check.error), 'error');
+      return;
+    }
+    const r = await request<TvSettings>(Events.TV_SETTINGS_UPDATE, { indexer: { kind, url, apiKey: key } });
+    setTesting(false);
+    if (r.ok && r.data) {
+      setS(r.data);
+      setStatus(check.data || null);
+      toast(`Подключено: трекеров — ${check.data?.trackers ?? 0}`, 'success');
+    } else toast(errorText(r.error), 'error');
+  };
+  const reset = async () => {
+    const r = await request<TvSettings>(Events.TV_SETTINGS_UPDATE, { indexer: null });
+    if (r.ok && r.data) {
+      setS(r.data);
+      setStatus(r.data.indexerStatus || null);
+      setManual(false);
+      setUrl('');
+      setKey('');
+      if (r.data.indexerStatus?.mode !== 'none') void test();
+    }
+  };
+
+  const name = status?.kind === 'prowlarr' ? 'Prowlarr' : 'Jackett';
+  return (
+    <Section title="Поиск раздач для каталога" icon={<Clapperboard size={18} />} right={testing ? <Spinner size={16} /> : null}>
+      <div className="flex items-start gap-3 rounded-2xl bg-ink-800 p-4">
+        <span className={cx('mt-1 h-2.5 w-2.5 shrink-0 rounded-full', status?.error ? 'bg-bad' : status && status.mode !== 'none' ? 'bg-ok' : 'bg-fg-dim')} />
+        <div className="min-w-0 flex-1 text-sm">
+          {!status || status.mode === 'none' ? (
+            <>
+              <div className="font-bold">Не настроен</div>
+              <div className="mt-0.5 text-fg-muted">Установите Jackett или Prowlarr на ПК с TVBox и добавьте в нём свои трекеры — TVBox подхватит его сам.</div>
+            </>
+          ) : (
+            <>
+              <div className="font-bold">
+                {name} {status.mode === 'auto' ? '· найден на ПК автоматически' : '· указан вручную'}
+              </div>
+              <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status.url}</div>
+              <div className={cx('mt-1 text-xs', status.error ? 'text-bad' : 'text-fg-muted')}>
+                {status.error ? status.error : status.trackers !== undefined ? `Трекеров подключено: ${status.trackers}` : 'проверяем…'}
+                {status.trackers === 0 && !status.error && ' — добавьте трекеры в веб-интерфейсе ' + name}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {(!status || status.mode === 'none') && (
+          <button className="btn-primary" onClick={() => void openExternal('https://github.com/Jackett/Jackett/releases/latest')}>
+            <Download size={16} /> Скачать Jackett
+          </button>
+        )}
+        {status && status.mode !== 'none' && (
+          <button className="btn-soft" disabled={testing} onClick={test}>
+            <PlugZap size={16} /> Проверить
+          </button>
+        )}
+        <button className="btn-ghost" onClick={() => setManual((m) => !m)}>
+          {manual ? 'Скрыть ручную настройку' : 'Указать вручную'}
+        </button>
+      </div>
+      {manual && (
+        <div className="mt-4 flex flex-col gap-3 border-t border-white/5 pt-4">
+          <Segmented2 value={kind} onChange={setKind} />
+          <input className="field font-mono text-sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={kind === 'jackett' ? 'http://127.0.0.1:9117' : 'http://127.0.0.1:9696'} />
+          <input className="field font-mono text-sm" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API-ключ (вверху страницы Jackett / Настройки → Общие в Prowlarr)" />
+          <div className="flex gap-2">
+            <button className="btn-primary flex-1" disabled={!url.trim() || !key.trim() || testing} onClick={save}>
+              Проверить и сохранить
+            </button>
+            {s.indexer && (
+              <button className="btn-ghost" onClick={reset}>
+                Сбросить
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <p className="mt-3 text-xs leading-relaxed text-fg-dim">
+        Трекеры и аккаунты на них живут в Jackett / Prowlarr на вашем ПК. TVBox только спрашивает их, выбирает лучшие раздачи (качество, озвучка, сиды) и сразу запускает просмотр.
+      </p>
+    </Section>
+  );
+}
+
+function Segmented2({ value, onChange }: { value: IndexerKind; onChange: (v: IndexerKind) => void }) {
+  return (
+    <div className="inline-flex self-start rounded-2xl bg-ink-800 p-1">
+      {(['jackett', 'prowlarr'] as IndexerKind[]).map((k) => (
+        <button
+          key={k}
+          type="button"
+          onClick={() => onChange(k)}
+          className={cx('rounded-xl px-4 py-2 text-sm font-semibold transition', value === k ? 'bg-ink-600 text-fg shadow' : 'text-fg-dim hover:text-fg-muted')}
+        >
+          {k === 'jackett' ? 'Jackett' : 'Prowlarr'}
+        </button>
+      ))}
+    </div>
   );
 }

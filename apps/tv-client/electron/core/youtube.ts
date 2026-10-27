@@ -1,257 +1,631 @@
 import { EventEmitter } from 'node:events';
-import { session, WebContentsView, type BrowserWindow } from 'electron';
+import path from 'node:path';
+import { session, WebContentsView, type BrowserWindow, type Session } from 'electron';
+import type { NavKey, YoutubeState } from '@tvbox/shared';
 import type { PlayerCommand, PlayTarget, RendererReport } from '../../src/bridge';
+import type { TvDatabase } from './db';
 
 /**
- * YouTube through the regular youtube.com watch page (not the embed player):
- * videos whose owners disabled embedding play fine, and the session is persistent,
- * so signing in to YouTube on the TV once gives Premium / age-restricted videos.
+ * YouTube as a TV app: the official YouTube TV interface (youtube.com/tv, the one smart TVs run)
+ * in a view laid over the TVBox window.
+ *  - made for a 10-foot screen and a D-pad: home, subscriptions, library, history, playlists, search,
+ *  - the Google account is linked with a code on the phone (yt.be/activate) — nothing to type at the TV,
+ *  - ads are cut out of the API responses (see youtube-preload.ts) and ad servers are blocked,
+ *  - the view stays alive in the background for a while, so reopening YouTube is instant,
+ *  - the view is shown only once YouTube has drawn its UI: no white flashes or half-loaded pages.
  */
-const PARTITION = 'persist:youtube';
-const CHROME_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-// Google's sign-in page refuses "embedded" Chromium; it accepts a Firefox UA.
-const LOGIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
+const PARTITION = 'persist:youtube-tv';
+const OLD_PARTITION = 'persist:youtube';
+const TV_UA =
+  'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.5 TV Safari/537.36';
+const BASE = 'https://www.youtube.com/tv';
+/** Free the memory if YouTube was not used for this long */
+const KEEP_ALIVE_MS = 20 * 60 * 1000;
 
-const PLAYER_CSS = `
-html, body { overflow: hidden !important; background: #000 !important; }
-#masthead-container, #secondary, #below, #related, #comments, ytd-watch-metadata, tp-yt-app-drawer,
-ytd-mini-guide-renderer, #guide, ytd-popup-container, .ytp-paid-content-overlay, .ytp-pause-overlay,
-.ytp-chrome-top, .ytp-chrome-bottom, .ytp-gradient-top, .ytp-gradient-bottom, .ytp-ce-element,
-.iv-branding, .ytp-cards-teaser, .ytp-endscreen-content, ytd-consent-bump-v2-lightbox, tp-yt-iron-overlay-backdrop
-  { display: none !important; }
-#movie_player, ytd-player, #player-container, #player-container-outer, #full-bleed-container {
-  position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
-  max-width: none !important; max-height: none !important; z-index: 2147483646 !important; background: #000 !important;
-}
-#movie_player video { width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important; object-fit: contain !important; }
-`;
+const AD_HOSTS = [
+  '*://*.doubleclick.net/*',
+  '*://*.googlesyndication.com/*',
+  '*://*.googleadservices.com/*',
+  '*://imasdk.googleapis.com/*',
+  '*://*.google-analytics.com/*',
+  '*://www.youtube.com/pagead/*',
+  '*://www.youtube.com/ptracking*',
+  '*://www.youtube.com/api/stats/ads*',
+  '*://www.youtube.com/get_midroll_*',
+  '*://www.youtube.com/youtubei/v1/log_event*',
+];
 
 const STATE_JS = `(() => {
-  const p = document.getElementById('movie_player');
-  const v = document.querySelector('#movie_player video') || document.querySelector('video');
-  // auto-skip skippable ads, dismiss "are you still watching?"
-  const skip = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button');
-  if (skip) skip.click();
-  const still = document.querySelector('yt-confirm-dialog-renderer #confirm-button, .ytp-button[aria-label*="Yes"]');
-  if (still && /still|ещё|еще/i.test(document.body.innerText.slice(0, 4000))) still.click();
-  const err = document.querySelector('.ytp-error-content-wrap-reason, .ytp-error');
-  const watch = location.hostname.endsWith('youtube.com') && location.pathname === '/watch';
+  const app = document.querySelector('ytlr-app');
+  const text = document.body ? document.body.innerText : '';
+  const all = document.body ? document.body.textContent : '';
+  const v = document.querySelector('video');
+  const pl = document.querySelector('.html5-video-player');
+  let vd = null;
+  try {
+    const d = pl && pl.getVideoData && pl.getVideoData();
+    const pr = pl && pl.getPlayerResponse && pl.getPlayerResponse();
+    const det = pr && pr.videoDetails;
+    if (d && d.video_id) vd = { id: d.video_id, title: d.title || (det && det.title) || '', author: d.author || (det && det.author) || '' };
+  } catch (e) {}
+  // "Введите код YKSM-SLYH" / "Enter the code ABC-DEF-GHI" (the format varies)
+  const code = ((/(?:Введите код|Enter the code|код)\\s*([A-Z0-9]{3,5}(?:-[A-Z0-9]{3,5}){1,3})/i.exec(text) || /\\b([A-Z0-9]{3,5}(?:-[A-Z0-9]{3,5}){1,3})\\b/.exec(text) || [])[1]) || null;
+  const focused = document.activeElement ? (document.activeElement.textContent || '').trim().slice(0, 60) : '';
+  const shown = (sel) => { const e = document.querySelector(sel); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const guide = document.querySelector('ytlr-guide-response');
+  const guideText = guide ? (guide.textContent || '').replace(/\\s+/g, ' ').trim() : '';
   return {
-    ready: !!(p && v),
-    t: v ? v.currentTime : 0,
-    d: v && isFinite(v.duration) ? v.duration : 0,
-    paused: v ? v.paused : true,
-    ended: v ? v.ended : false,
-    waiting: v ? v.readyState < 3 : true,
-    ad: !!document.querySelector('#movie_player.ad-showing'),
-    title: !watch ? '' : (document.title || '').replace(/^\\(\\d+\\)\\s*/, '').replace(/ - YouTube$/, ''),
-    error: err ? (err.innerText || 'error').trim().slice(0, 200) : null,
-    href: location.href,
+    ready: !!(app && app.children.length && (document.querySelector('ytlr-guide-response, ytlr-surface-page, ytlr-welcome, ytlr-account-selector, ytlr-search-container, ytlr-browse') || text.trim().length > 30)),
+    // the side menu is filled in: "Войти / Sign in" at its top means nobody is signed in
+    guide: /Главная|Home/.test(guideText),
+    hash: location.hash || '#/',
+    picker: shown('ytlr-welcome') || shown('ytlr-account-selector'),
+    welcome: shown('ytlr-welcome') && !code,
+    code: /yt\\.be\\/activate|youtube\\.com\\/activate/i.test(text) ? code : null,
+    signedOut: /^(Войти|Sign in)/i.test(guideText) || /Вы вышли из аккаунта|You.re signed out/.test(all),
+    focused,
+    video: v ? { t: v.currentTime || 0, d: isFinite(v.duration) ? v.duration : 0, paused: v.paused, ended: v.ended, waiting: v.readyState < 3, muted: v.muted, rate: v.playbackRate } : null,
+    ad: !!(pl && /\\bad-showing\\b|\\bad-interrupting\\b/.test(pl.className)),
+    vd,
+    removed: (window.__tvboxAdblock && window.__tvboxAdblock.removed) || 0,
   };
 })()`;
 
-interface YtState {
+interface PageState {
   ready: boolean;
-  t: number;
-  d: number;
-  paused: boolean;
-  ended: boolean;
-  waiting: boolean;
+  guide: boolean;
+  hash: string;
+  picker: boolean;
+  welcome: boolean;
+  code: string | null;
+  signedOut: boolean;
+  focused: string;
+  video: { t: number; d: number; paused: boolean; ended: boolean; waiting: boolean; muted: boolean; rate: number } | null;
   ad: boolean;
-  title: string;
-  error: string | null;
-  href: string;
+  vd: { id: string; title: string; author: string } | null;
+  removed: number;
 }
+
+const KEYS: Record<string, string> = {
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  enter: 'Enter',
+  back: 'Escape',
+  backspace: 'Backspace',
+};
+
+/** Electron key name -> DOM key / keyCode */
+const DOM_KEYS: Record<string, [string, number]> = {
+  Up: ['ArrowUp', 38],
+  Down: ['ArrowDown', 40],
+  Left: ['ArrowLeft', 37],
+  Right: ['ArrowRight', 39],
+  Enter: ['Enter', 13],
+  Escape: ['Escape', 27],
+  Backspace: ['Backspace', 8],
+};
+
+/** Runs inside the YouTube page (serialized with toString). */
+function dispatchKey(key: string, keyCode: number): void {
+  const target = (document.activeElement as HTMLElement | null) || document.body;
+  for (const type of ['keydown', 'keyup']) {
+    const e = new KeyboardEvent(type, { key, code: key, bubbles: true, cancelable: true, composed: true });
+    Object.defineProperty(e, 'keyCode', { get: () => keyCode });
+    Object.defineProperty(e, 'which', { get: () => keyCode });
+    target.dispatchEvent(e);
+  }
+}
+
+const watchHash = (id: string, t?: number) => `#/watch?v=${encodeURIComponent(id)}${t && t > 1 ? `&t=${Math.floor(t)}s` : ''}`;
 
 export class YouTubeController extends EventEmitter {
   private view: WebContentsView | null = null;
+  private attached = false;
+  private ready = false;
   private target: PlayTarget | null = null;
   private timer: NodeJS.Timeout | null = null;
-  private mode: 'idle' | 'play' | 'login' = 'idle';
-  private titleSent = '';
+  private destroyTimer: NodeJS.Timeout | null = null;
+  private page: PageState | null = null;
+  private st: YoutubeState = { open: false, mode: 'closed', signedIn: false, adsBlocked: 0 };
+  private stJson = '';
+  private videoId: string | null = null;
+  /** The requested video actually reached the screen (before that, menus are just the way there) */
+  private watchSeen = false;
+  private pending: { hash: string; guest: boolean } | null = null;
+  private adActive = false;
+  private adWasMuted = false;
+  private lastPickerKey = 0;
+  private lastBackAtHome = 0;
+  private picking = false;
+  private loginRequested = false;
+  private baseRemoved = 0;
+  private syntheticUntil = 0;
 
-  constructor(private readonly getWindow: () => BrowserWindow | null) {
+  constructor(
+    private readonly getWindow: () => BrowserWindow | null,
+    private readonly db: TvDatabase,
+  ) {
     super();
+    this.st.signedIn = !!db.getJson<boolean>('youtube:signedIn');
+  }
+
+  // ------------------------------------------------------------------ view lifecycle
+  private ses(): Session {
+    const ses = session.fromPartition(PARTITION);
+    if (!(ses as Session & { __tvbox?: boolean }).__tvbox) {
+      (ses as Session & { __tvbox?: boolean }).__tvbox = true;
+      ses.setUserAgent(TV_UA, 'ru-RU,ru;q=0.9,en;q=0.7');
+      ses.setPermissionRequestHandler((_wc, perm, cb) => cb(perm === 'fullscreen' || perm === 'media'));
+      ses.webRequest.onBeforeRequest({ urls: AD_HOSTS }, (_d, cb) => cb({ cancel: true }));
+    }
+    return ses;
   }
 
   private ensureView(): WebContentsView | null {
     const win = this.getWindow();
     if (!win) return null;
     if (this.view && !this.view.webContents.isDestroyed()) return this.view;
-    const ses = session.fromPartition(PARTITION);
-    ses.setUserAgent(CHROME_UA);
-    ses.setPermissionRequestHandler((_wc, perm, cb) => cb(perm === 'fullscreen' || perm === 'media'));
+    this.ses();
     const view = new WebContentsView({
-      webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
+      webPreferences: {
+        partition: PARTITION,
+        preload: path.join(__dirname, 'youtube-preload.js'),
+        // the preload must run in the page's own world to see YouTube's responses; nothing is exposed
+        contextIsolation: false,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+        autoplayPolicy: 'no-user-gesture-required',
+      },
     });
     view.setBackgroundColor('#000000');
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    view.webContents.on('dom-ready', () => this.onDomReady());
-    view.webContents.on('did-navigate', () => this.onNavigate());
-    view.webContents.on('did-navigate-in-page', () => this.onNavigate());
+    view.webContents.on('did-start-loading', () => {
+      this.ready = false;
+    });
+    view.webContents.on('render-process-gone', () => this.destroyView());
     view.webContents.on('before-input-event', (e, input) => {
-      if (input.type === 'keyDown' && input.key === 'Escape' && this.mode === 'login') {
+      // a keyboard at the TV: Esc on the YouTube home screen closes YouTube
+      // (keys we send ourselves from the remote also pass through here — those are not the TV keyboard)
+      if (input.type === 'keyDown' && Date.now() > this.syntheticUntil && (input.key === 'Escape' || input.key === 'BrowserBack') && this.atHome()) {
         e.preventDefault();
-        this.hide();
+        this.backAtHome();
       }
     });
     this.view = view;
+    this.ready = false;
+    void view.webContents.loadURL(BASE + '#/');
     return view;
   }
 
-  private layout(): void {
+  private destroyView(): void {
+    const win = this.getWindow();
+    if (this.view) {
+      try {
+        if (win && win.contentView.children.includes(this.view)) win.contentView.removeChildView(this.view);
+        if (!this.view.webContents.isDestroyed()) this.view.webContents.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.view = null;
+    this.attached = false;
+    this.ready = false;
+    this.page = null;
+  }
+
+  private layout = (): void => {
     const win = this.getWindow();
     if (!win || !this.view) return;
     const [w, h] = win.getContentSize();
     this.view.setBounds({ x: 0, y: 0, width: w, height: h });
-  }
+  };
 
-  private show(): void {
+  /** Lay the view over the window (only once YouTube has drawn something). */
+  private attach(): void {
     const win = this.getWindow();
-    if (!win || !this.view) return;
+    if (!win || !this.view || this.attached) return;
     if (!win.contentView.children.includes(this.view)) win.contentView.addChildView(this.view);
     this.layout();
-    win.removeAllListeners('resize');
-    win.on('resize', () => this.layout());
+    win.off('resize', this.layout);
+    win.on('resize', this.layout);
+    this.attached = true;
+    if (!win.isFocused()) win.focus();
     this.view.webContents.focus();
+    this.emit('attached');
   }
 
-  hide(): void {
+  private detach(): void {
     const win = this.getWindow();
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    if (this.view && !this.view.webContents.isDestroyed()) {
-      try {
-        void this.view.webContents.executeJavaScript(`document.querySelectorAll('video').forEach(v => v.pause())`).catch(() => undefined);
-        this.view.webContents.loadURL('about:blank').catch(() => undefined);
-      } catch {
-        // ignore
-      }
-      if (win && win.contentView.children.includes(this.view)) win.contentView.removeChildView(this.view);
-    }
-    this.mode = 'idle';
-    this.target = null;
+    if (win && this.view && win.contentView.children.includes(this.view)) win.contentView.removeChildView(this.view);
+    win?.off('resize', this.layout);
+    this.attached = false;
+    win?.webContents.focus();
   }
 
+  get webContents(): Electron.WebContents | null {
+    return this.attached && this.view && !this.view.webContents.isDestroyed() ? this.view.webContents : null;
+  }
+
+  // ------------------------------------------------------------------ public API (used by the player)
+  /** YouTube is on screen (playing / browsing, or showing the account-linking code). */
   get active(): boolean {
-    return this.mode === 'play' && !!this.target;
+    return !!this.target || this.loginRequested;
   }
 
-  /** Start playing a YouTube target (replaces the current video). */
+  get state(): YoutubeState {
+    return this.st;
+  }
+
+  /** Show YouTube: a video (target.videoId) or the home screen. */
   play(target: PlayTarget): void {
     const view = this.ensureView();
-    if (!view || !target.videoId) return;
-    this.target = target;
-    this.mode = 'play';
-    this.titleSent = '';
-    view.webContents.setUserAgent(CHROME_UA);
-    const t = Math.floor(target.startAt || 0);
-    void view.webContents.loadURL(`https://www.youtube.com/watch?v=${encodeURIComponent(target.videoId)}${t ? `&t=${t}s` : ''}`);
-    this.show();
-    this.report('loading', 0, 0);
-    if (this.timer) clearInterval(this.timer);
-    this.timer = setInterval(() => void this.poll(), 1000);
-  }
-
-  /** Let the user sign in to YouTube on the TV (keyboard / mouse at the TV). */
-  login(): void {
-    const view = this.ensureView();
     if (!view) return;
+    if (this.destroyTimer) clearTimeout(this.destroyTimer);
+    this.destroyTimer = null;
+    const wasActive = !!this.target;
+    this.target = target;
+    this.videoId = target.videoId || null;
+    this.watchSeen = false;
+    if (target.videoId) this.go(watchHash(target.videoId, target.startAt), true);
+    else if (!wasActive && this.page && /^#\/watch/.test(this.page.hash)) this.go('#/', false);
+    if (this.ready) this.attach();
+    this.report(target.videoId ? 'loading' : 'paused', 0, 0);
+    this.publish({ open: true, mode: target.videoId ? 'watch' : 'browse', videoId: target.videoId, title: target.videoId ? target.title : undefined });
+    this.startPolling(500);
+  }
+
+  /** Change the target without navigating (YouTube itself switched videos). */
+  adopt(target: PlayTarget): void {
+    this.target = target;
+  }
+
+  search(query: string): void {
+    const q = query.trim();
+    if (!q) return this.go('#/search', false);
+    this.go(`#/search?q=${encodeURIComponent(q)}`, false);
+  }
+
+  home(): void {
+    this.go('#/', false);
+  }
+
+  /** Close YouTube (keeps the page in memory for a quick return). */
+  hide(): void {
+    const wc = this.view?.webContents;
+    if (wc && !wc.isDestroyed()) {
+      void wc.executeJavaScript(`document.querySelectorAll('video').forEach(v => v.pause())`).catch(() => undefined);
+      // leave the watch page, so the next open starts at the home screen
+      if (this.page && /^#\/watch/.test(this.page.hash)) void wc.executeJavaScript(`location.hash = '#/'`).catch(() => undefined);
+    }
+    this.detach();
     this.target = null;
-    this.mode = 'login';
-    if (this.timer) clearInterval(this.timer);
-    view.webContents.setUserAgent(LOGIN_UA);
-    void view.webContents.loadURL('https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F');
-    this.show();
-  }
-
-  async logout(): Promise<void> {
-    await session.fromPartition(PARTITION).clearStorageData();
-  }
-
-  async signedIn(): Promise<boolean> {
-    const cookies = await session.fromPartition(PARTITION).cookies.get({ domain: '.youtube.com' });
-    return cookies.some((c) => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID');
+    this.videoId = null;
+    this.pending = null;
+    this.loginRequested = false;
+    this.stopPolling();
+    this.publish({ open: false, mode: 'closed', code: undefined, videoId: undefined, title: undefined });
+    if (this.destroyTimer) clearTimeout(this.destroyTimer);
+    if (this.view) this.destroyTimer = setTimeout(() => this.destroyView(), KEEP_ALIVE_MS);
   }
 
   command(c: PlayerCommand): void {
     const wc = this.view?.webContents;
-    if (!wc || wc.isDestroyed() || this.mode !== 'play') return;
+    if (!wc || wc.isDestroyed()) return;
     const js =
       c.type === 'toggle'
-        ? `(() => { const v = document.querySelector('#movie_player video'); if (v) v.paused ? v.play() : v.pause(); })()`
+        ? `(() => { const v = document.querySelector('video'); if (v) v.paused ? v.play() : v.pause(); })()`
         : c.type === 'play'
-          ? `document.querySelector('#movie_player video')?.play()`
+          ? `document.querySelector('video')?.play()`
           : c.type === 'pause' || c.type === 'stop'
-            ? `document.querySelector('#movie_player video')?.pause()`
+            ? `document.querySelector('video')?.pause()`
             : c.type === 'seek'
-              ? `(() => { const p = document.getElementById('movie_player'); if (p && p.seekTo) p.seekTo(${Number(c.position) || 0}, true); else { const v = document.querySelector('video'); if (v) v.currentTime = ${Number(c.position) || 0}; } })()`
-              : c.type === 'subtitles'
-                ? `(() => { const p = document.getElementById('movie_player'); if (!p) return; ${c.id ? `p.loadModule && p.loadModule('captions'); p.setOption && p.setOption('captions', 'track', { languageCode: ${JSON.stringify(c.id)} });` : `p.unloadModule && p.unloadModule('captions');`} })()`
-                : '';
+              ? `(() => { const p = document.querySelector('.html5-video-player'); const t = ${Number(c.position) || 0}; if (p && p.seekTo) p.seekTo(t, true); else { const v = document.querySelector('video'); if (v) v.currentTime = t; } })()`
+              : '';
     if (js) void wc.executeJavaScript(js, true).catch(() => undefined);
-    setTimeout(() => void this.poll(), 200);
+    setTimeout(() => void this.poll(), 250);
   }
 
-  private onDomReady(): void {
+  /** D-pad from the remote. */
+  nav(key: NavKey): void {
     const wc = this.view?.webContents;
-    if (!wc) return;
-    const url = wc.getURL();
-    if (this.mode === 'play' && /youtube\.com\/watch/.test(url)) {
-      void wc.insertCSS(PLAYER_CSS);
-      void wc.executeJavaScript(`setTimeout(() => window.dispatchEvent(new Event('resize')), 300); setTimeout(() => window.dispatchEvent(new Event('resize')), 1500);`).catch(() => undefined);
-    }
-    if (/consent\.(youtube|google)\.com/.test(url)) {
-      // EU consent page: choose "Reject all" (the privacy-preserving option)
-      void wc
-        .executeJavaScript(
-          `(() => { const b = [...document.querySelectorAll('button, input[type=submit]')].find(x => /reject|отклонить|odbij/i.test(x.innerText || x.value || x.getAttribute('aria-label') || '')); if (b) b.click(); })()`,
-        )
-        .catch(() => undefined);
+    if (!wc || wc.isDestroyed()) return;
+    if (key === 'home') return this.home();
+    if (key === 'search') return this.go('#/search', false);
+    if (key === 'playpause') return this.command({ type: 'toggle' });
+    if (key === 'back' && this.atHome()) return this.backAtHome();
+    const code = KEYS[key];
+    if (!code) return;
+    this.sendKey(code);
+    setTimeout(() => void this.poll(), 300);
+  }
+
+  /** Text from the remote: a search query. */
+  type(text: string): void {
+    this.search(text);
+  }
+
+  /** Link a Google account: shows the activation code (enter it at yt.be/activate on the phone). */
+  async login(): Promise<void> {
+    if (this.st.signedIn) return;
+    this.loginRequested = true;
+    const view = this.ensureView();
+    if (!view) return;
+    // back to the welcome screen, where YouTube shows the activation code
+    await this.ses().clearStorageData({ storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] });
+    this.ready = false;
+    void view.webContents.loadURL(BASE + '#/');
+    this.publish({ open: true, mode: 'login', code: undefined });
+    this.startPolling(500);
+  }
+
+  async logout(): Promise<void> {
+    await this.ses().clearStorageData();
+    await session.fromPartition(OLD_PARTITION).clearStorageData().catch(() => undefined);
+    this.setSignedIn(false);
+    if (this.view && !this.view.webContents.isDestroyed()) {
+      this.ready = false;
+      void this.view.webContents.loadURL(BASE + '#/');
     }
   }
 
-  private onNavigate(): void {
-    const wc = this.view?.webContents;
+  async signedIn(): Promise<boolean> {
+    return this.st.signedIn;
+  }
+
+  /** Small notification drawn inside YouTube (TVBox toasts are hidden under the view). */
+  toast(message: string): void {
+    const wc = this.webContents;
     if (!wc) return;
-    const url = wc.getURL();
-    if (this.mode === 'login' && /^https:\/\/(www|m)\.youtube\.com\//.test(url)) {
-      this.emit('signed-in');
-      this.hide();
+    const js = `(() => {
+      const d = document.createElement('div');
+      d.textContent = ${JSON.stringify(message)};
+      d.style.cssText = 'position:fixed;right:2.5vw;top:3vh;z-index:2147483647;max-width:30vw;padding:1.1vw 1.5vw;border-radius:1.4vw;background:rgba(18,20,26,.92);color:#fff;font:600 1.15vw/1.35 system-ui,sans-serif;box-shadow:0 1vw 3vw rgba(0,0,0,.5);opacity:0;transform:translateY(-1vw);transition:all .35s ease';
+      document.body.appendChild(d);
+      requestAnimationFrame(() => { d.style.opacity = '1'; d.style.transform = 'none'; });
+      setTimeout(() => { d.style.opacity = '0'; setTimeout(() => d.remove(), 400); }, 4500);
+    })()`;
+    void wc.executeJavaScript(js).catch(() => undefined);
+  }
+
+  // ------------------------------------------------------------------ internals
+  private atHome(): boolean {
+    const h = this.page?.hash || '#/';
+    return (h === '#/' || h === '#' || h === '') && !this.page?.picker && !this.page?.code;
+  }
+
+  private backAtHome(): void {
+    const now = Date.now();
+    // first Back on the home screen goes to YouTube's side menu, the second one closes YouTube
+    if (now - this.lastBackAtHome < 2500) {
+      this.lastBackAtHome = 0;
+      this.emit('exit');
+      return;
     }
+    this.lastBackAtHome = now;
+    this.sendKey('Escape');
+    this.toast('Нажмите «Назад» ещё раз, чтобы закрыть YouTube');
+  }
+
+  /**
+   * Press a key inside YouTube. The key events are dispatched into the page itself:
+   * Electron's sendInputEvent only reaches the page while the TVBox window has the OS focus,
+   * which on a living-room PC is often not the case (another window, the desktop after login…).
+   */
+  private sendKey(keyCode: string): void {
+    const wc = this.view?.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const k = DOM_KEYS[keyCode];
+    if (!k) return;
+    this.syntheticUntil = Date.now() + 400;
+    void wc.executeJavaScript(`(${dispatchKey.toString()})(${JSON.stringify(k[0])}, ${k[1]})`, true).catch(() => undefined);
+  }
+
+  private go(hash: string, guest: boolean): void {
+    const wc = this.view?.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    if (!this.ready || this.page?.picker) {
+      // YouTube is still starting (or asks "who's watching"): navigate once it's ready
+      this.pending = { hash, guest };
+      return;
+    }
+    this.pending = null;
+    void wc.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch(() => undefined);
+  }
+
+  private startPolling(ms: number): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.poll(), ms);
+  }
+
+  private stopPolling(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private setSignedIn(v: boolean): void {
+    if (this.st.signedIn === v) return;
+    this.db.setJson('youtube:signedIn', v);
+    this.publish({ signedIn: v });
+    if (v) this.emit('signed-in');
   }
 
   private async poll(): Promise<void> {
+    this.timer = null;
     const wc = this.view?.webContents;
-    const target = this.target;
-    if (!wc || wc.isDestroyed() || !target || this.mode !== 'play') return;
-    let s: YtState | null = null;
+    if (!wc || wc.isDestroyed() || (!this.target && !this.loginRequested)) return;
+    let s: PageState | null = null;
     try {
-      s = (await wc.executeJavaScript(STATE_JS, true)) as YtState;
+      s = (await wc.executeJavaScript(STATE_JS, true)) as PageState;
     } catch {
+      s = null;
+    }
+    if (s) await this.handle(s);
+    if (this.target || this.loginRequested) this.startPolling(s?.video && !s.video.paused ? 1000 : 700);
+  }
+
+  private async handle(s: PageState): Promise<void> {
+    const wc = this.view?.webContents;
+    if (!wc) return;
+    this.page = s;
+    if (s.ready && !this.ready) {
+      this.ready = true;
+    }
+    if (this.ready && (this.target || this.loginRequested) && !this.attached) this.attach();
+
+    // signed in? (YouTube TV keeps its own tokens; the guide says "You're signed out" otherwise)
+    if (s.ready && s.guide && !s.picker && !s.code) this.setSignedIn(!s.signedOut);
+
+    // "Who's watching?" / welcome screen
+    if (s.picker && !this.picking && Date.now() - this.lastPickerKey > 2500) {
+      if (this.loginRequested) {
+        // "Get started" / "Add account" is focused first: it opens the activation code
+        this.lastPickerKey = Date.now();
+        if (!s.code) this.sendKey('Enter');
+      } else if (this.st.signedIn && !s.welcome) {
+        // "who's watching?": the account tile comes first
+        this.lastPickerKey = Date.now();
+        this.sendKey('Enter');
+        if (this.videoId) this.pending = { hash: watchHash(this.videoId), guest: false };
+      } else {
+        // no account yet: go in as a guest (home, search and videos work; the remote offers to link the account)
+        void this.pickGuest(s.welcome);
+      }
+    }
+
+    // activation code for linking the account
+    if (s.code !== (this.st.code || null)) this.publish({ code: s.code || undefined, mode: s.code ? 'login' : this.st.mode === 'login' ? 'browse' : this.st.mode });
+    if (this.loginRequested && !s.code && s.ready && s.guide && !s.picker && !s.signedOut) {
+      this.loginRequested = false;
+      this.setSignedIn(true);
+      if (!this.target) this.hide();
+    }
+
+    if (s.ready && !s.picker && this.pending) {
+      const p = this.pending;
+      this.pending = null;
+      void wc.executeJavaScript(`location.hash = ${JSON.stringify(p.hash)}`).catch(() => undefined);
       return;
     }
-    if (!s || this.target !== target) return;
-    if (/google\.[a-z.]+\/sorry|consent\./.test(s.href)) {
-      // Google asks to prove we're not a bot: the page is on screen, a mouse/keyboard at the TV can solve it
-      return this.report('error', 0, 0, 'YouTube просит подтвердить, что вы не робот — пройдите проверку на экране ТВ');
+
+    // ads that still slipped through: mute and fast-forward
+    if (s.ad && s.video) {
+      if (!this.adActive) {
+        this.adActive = true;
+        this.adWasMuted = s.video.muted;
+        this.publish({ adsBlocked: (this.st.adsBlocked || 0) + 1 });
+      }
+      void wc
+        .executeJavaScript(
+          `(() => { const v = document.querySelector('video'); if (!v) return; v.muted = true; v.playbackRate = 16; if (isFinite(v.duration) && v.duration > 0 && v.currentTime < v.duration - 0.3) v.currentTime = v.duration - 0.1;
+            const skip = [...document.querySelectorAll('[class*="skip"], ytlr-skip-button-renderer, .ytp-ad-skip-button, .ytp-skip-ad-button')].find(e => e.offsetParent !== null);
+            if (skip) { skip.focus && skip.focus(); skip.click && skip.click(); } })()`,
+        )
+        .catch(() => undefined);
+      this.sendKey('Enter');
+      return this.report('loading', 0, 0);
     }
-    if (s.title && s.title !== this.titleSent && s.title !== 'YouTube') {
-      this.titleSent = s.title;
-      this.emit('title', target.key, s.title);
+    if (this.adActive && !s.ad) {
+      this.adActive = false;
+      void wc
+        .executeJavaScript(`(() => { const v = document.querySelector('video'); if (v) { v.playbackRate = 1; v.muted = ${this.adWasMuted}; } })()`)
+        .catch(() => undefined);
     }
-    if (s.error) {
-      this.report('error', s.t, s.d, s.error);
-      return;
+    const removed = s.removed - this.baseRemoved;
+    if (removed > 0) {
+      this.baseRemoved = s.removed;
+      this.publish({ adsBlocked: (this.st.adsBlocked || 0) + removed });
     }
-    if (!s.ready) return this.report('loading', 0, 0);
-    if (s.ad) return this.report('loading', 0, 0, undefined);
-    this.report(s.ended ? 'ended' : s.paused ? 'paused' : s.waiting ? 'loading' : 'playing', s.t, s.d);
+
+    // what is on screen: a video or YouTube's menus
+    const watching = /^#\/watch/.test(s.hash) && !!s.vd?.id;
+    if (watching && s.vd) {
+      this.watchSeen = true;
+      if (s.vd.id !== this.videoId || (s.vd.title && s.vd.title !== this.st.title)) {
+        this.videoId = s.vd.id;
+        this.emit('watch', s.vd.id, s.vd.title, s.vd.author);
+      }
+      this.publish({ open: true, mode: 'watch', videoId: s.vd.id, title: s.vd.title || this.st.title });
+    } else if (!s.code && !s.picker) {
+      if (this.videoId && this.watchSeen && !this.pending && !/^#\/watch/.test(s.hash)) {
+        this.videoId = null;
+        this.watchSeen = false;
+        this.emit('browse');
+      }
+      if (this.target && !this.videoId) this.publish({ open: true, mode: 'browse', videoId: undefined, title: undefined });
+    }
+
+    if (!this.target) return;
+    const v = s.video;
+    if (!watching || !v) return this.report(this.videoId ? 'loading' : 'paused', 0, 0);
+    this.report(v.ended ? 'ended' : v.paused ? 'paused' : v.waiting ? 'loading' : 'playing', v.t, v.d);
+  }
+
+  /**
+   * Not signed in and a video was asked for: answer "who's watching?" with "watch as guest".
+   * The welcome screen first needs "Get started", which opens the sign-in options with the guest one.
+   */
+  private async pickGuest(welcome: boolean): Promise<void> {
+    if (this.picking) return;
+    this.picking = true;
+    this.lastPickerKey = Date.now();
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const focused = async () =>
+      String(await this.view?.webContents.executeJavaScript(`document.activeElement ? document.activeElement.textContent || '' : ''`).catch(() => '') ?? '');
+    try {
+      if (welcome) {
+        this.sendKey('Enter');
+        await wait(1500);
+      }
+      let found = false;
+      for (let i = 0; i < 5 && this.view && !this.view.webContents.isDestroyed(); i++) {
+        if (/гост|guest/i.test(await focused())) {
+          found = true;
+          break;
+        }
+        this.sendKey('Down');
+        await wait(300);
+      }
+      if (found) {
+        this.sendKey('Enter');
+        // YouTube drops the deep link while asking: open the video again once it's past the picker
+        if (this.videoId) this.pending = { hash: watchHash(this.videoId), guest: true };
+      }
+    } finally {
+      this.lastPickerKey = Date.now();
+      this.picking = false;
+    }
+  }
+
+  private publish(patch: Partial<YoutubeState>): void {
+    this.st = { ...this.st, ...patch };
+    const json = JSON.stringify(this.st);
+    if (json === this.stJson) return;
+    this.stJson = json;
+    this.emit('state', this.st);
   }
 
   private report(status: RendererReport['status'], position: number, duration: number, error?: string): void {
     if (!this.target) return;
     this.emit('report', { key: this.target.key, status, position, duration, error } satisfies RendererReport);
   }
+}
+
+/** Keyboard at the TV (keys that reached the TVBox page instead of YouTube). */
+export function navKeyFromKeyboard(key: string): NavKey | null {
+  const map: Record<string, NavKey> = {
+    ArrowUp: 'up',
+    ArrowDown: 'down',
+    ArrowLeft: 'left',
+    ArrowRight: 'right',
+    Enter: 'enter',
+    ' ': 'playpause',
+    MediaPlayPause: 'playpause',
+    Escape: 'back',
+    BrowserBack: 'back',
+    Backspace: 'backspace',
+  };
+  return map[key] || null;
 }

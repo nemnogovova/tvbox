@@ -13,6 +13,7 @@ import {
   type PlayerState,
   type QueueItem,
   type RepeatMode,
+  type TorrentMeta,
 } from '@tvbox/shared';
 import type { Library } from './library';
 import type { TorrentEngine } from './torrents';
@@ -33,6 +34,8 @@ export interface PlayerDeps {
   music: MusicService;
   send: (channel: 'player:load' | 'player:cmd' | 'cast:stop', payload?: unknown) => void;
   setFullscreen: (v?: boolean) => boolean;
+  /** Catalog info attached to a torrent started from the catalog */
+  torrentMeta?: (torrentId: string) => TorrentMeta | undefined;
 }
 
 const LANG: Record<string, string> = {
@@ -86,12 +89,61 @@ export class PlayerController extends EventEmitter {
   constructor(private readonly d: PlayerDeps) {
     super();
     d.youtube.on('report', (r: RendererReport) => this.onReport(r));
-    d.youtube.on('title', (key: string, title: string) => {
-      if (this.target?.key === key && this.target.title !== title) {
-        this.target.title = title;
-        this.emitState(true);
+    // YouTube TV switched videos by itself (the user picked one on the TV, autoplay, end screen)
+    d.youtube.on('watch', (videoId: string, title: string, author: string) => {
+      const t = this.target;
+      if (t?.kind !== 'youtube') return;
+      const changed = t.videoId !== videoId;
+      t.videoId = videoId;
+      t.title = title || (changed ? 'YouTube' : t.title);
+      t.subtitle = author || undefined;
+      t.poster = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      t.backdrop = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+      if (changed) t.startAt = 0;
+      if (changed && !title) {
+        void youtubeTitle(`https://www.youtube.com/watch?v=${videoId}`).then((x) => {
+          if (x && this.target === t && t.videoId === videoId) {
+            t.title = x;
+            this.emitState(true);
+          }
+        });
       }
+      this.emitState(true);
     });
+    d.youtube.on('browse', () => {
+      const t = this.target;
+      if (t?.kind !== 'youtube') return;
+      t.videoId = undefined;
+      t.title = 'YouTube';
+      t.subtitle = 'Главная, подписки, плейлисты';
+      t.poster = undefined;
+      t.backdrop = undefined;
+      this.emitState(true);
+    });
+    d.youtube.on('exit', () => {
+      if (this.target?.kind === 'youtube') this.stop();
+    });
+  }
+
+  /** Open YouTube TV on the home screen, a video or search results. */
+  async openYoutube(opts: { videoId?: string; search?: string } = {}): Promise<{ ok: boolean; error?: string }> {
+    if (this.target?.kind === 'youtube' && !opts.videoId) {
+      if (opts.search) this.d.youtube.search(opts.search);
+      else this.d.youtube.home();
+      return { ok: true };
+    }
+    if (opts.videoId) return this.play({ source: 'youtube', url: `https://www.youtube.com/watch?v=${opts.videoId}` });
+    if (this.cast.active) this.d.send('cast:stop');
+    if (this.target?.mediaId && this.report?.duration) this.d.library.saveProgress(this.target.mediaId, this.report.position, this.report.duration);
+    if (this.request) this.history.push(this.request);
+    this.request = null;
+    this.load({ key: newKey(), kind: 'youtube', source: 'youtube', title: 'YouTube', subtitle: 'Главная, подписки, плейлисты' });
+    if (opts.search) this.d.youtube.search(opts.search);
+    return { ok: true };
+  }
+
+  get youtubeOpen(): boolean {
+    return this.target?.kind === 'youtube';
   }
 
   /** Send a command to whatever renders the current item. */
@@ -194,6 +246,8 @@ export class PlayerController extends EventEmitter {
 
   private async onEnded(): Promise<void> {
     const t = this.target;
+    // YouTube shows its own end screen / autoplay: only move on if something is queued
+    if (t?.kind === 'youtube' && !this.queue.length && !(this.repeat === 'all' && this.cycle.length)) return;
     if (t?.mediaId) {
       const dur = this.report?.duration || t.duration || 0;
       if (dur) this.d.library.saveProgress(t.mediaId, dur, dur);
@@ -365,7 +419,7 @@ export class PlayerController extends EventEmitter {
     this.request = null;
     this.report = null;
     this.probeInfo = null;
-    this.d.youtube.hide();
+    if (this.d.youtube.active) this.d.youtube.hide();
     this.d.send('player:load', null);
     this.emitState(true);
   }
@@ -374,7 +428,7 @@ export class PlayerController extends EventEmitter {
     this.target = t;
     this.report = null;
     if (t.kind === 'youtube') this.d.youtube.play(t);
-    else this.d.youtube.hide();
+    else if (this.d.youtube.active) this.d.youtube.hide();
     this.d.send('player:load', t);
     this.emitState(true);
   }
@@ -476,6 +530,8 @@ export class PlayerController extends EventEmitter {
     let input: string | null = null; // what ffmpeg / the player reads
     let source: PlayTarget['source'] = 'local';
     let title = req.title || '';
+    let meta: TorrentMeta | undefined;
+    let metaSubtitle: string | undefined;
 
     if (req.source === 'torrent' && req.torrentId) {
       const id = req.torrentId.toLowerCase();
@@ -483,7 +539,13 @@ export class PlayerController extends EventEmitter {
       if (idx === undefined || !this.d.torrents.has(id)) throw new Error('torrent_not_ready');
       const fp = this.d.torrents.filePath(id, idx);
       const name = this.d.torrents.fileName(id, idx) || '';
-      title = parseMediaName(name).title || title;
+      const parsed = parseMediaName(name);
+      title = parsed.title || title;
+      meta = this.d.torrentMeta?.(id);
+      if (meta) {
+        title = meta.title;
+        if (meta.type === 'tv' && parsed.episode !== undefined) metaSubtitle = `S${String(parsed.season ?? 1).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}`;
+      }
       if (fp && this.d.torrents.isComplete(id, idx) && fs.existsSync(fp)) {
         filePath = fp;
         input = fp;
@@ -507,12 +569,12 @@ export class PlayerController extends EventEmitter {
     if (source === 'local' && !fs.existsSync(input)) throw new Error('file_missing');
 
     const fileKind = mediaKindOfFile(filePath);
-    if (item) {
+    if (item && !(meta && !item.tmdbId)) {
       title = item.title;
     } else if (!title) {
       title = parseMediaName(path.basename(filePath)).title;
     }
-    const subtitle = item?.kind === 'episode' ? episodeLabel(item) : undefined;
+    const subtitle = item?.kind === 'episode' && item.tmdbId ? episodeLabel(item) : metaSubtitle ?? (item?.kind === 'episode' ? episodeLabel(item) : undefined);
     const progress = item ? this.d.library.getProgress(item.id) : undefined;
     let startAt = req.startAt;
     if (startAt === undefined && progress && progress.position > 30 && progress.position < progress.duration * 0.92) startAt = progress.position;
@@ -550,8 +612,8 @@ export class PlayerController extends EventEmitter {
       source,
       title,
       subtitle,
-      poster: item?.poster,
-      backdrop: item?.backdrop,
+      poster: item?.poster || meta?.poster,
+      backdrop: item?.backdrop || meta?.backdrop,
       mediaId: item?.id,
       url: decision.direct ? directUrl : undefined,
       transcode: decision.direct ? undefined : transcode,

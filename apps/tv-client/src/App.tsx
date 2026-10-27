@@ -24,6 +24,7 @@ export default function App() {
   const [idle, setIdle] = useState<IdleSettings>(DEFAULT_IDLE_SETTINGS);
   const [saver, setSaver] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [launching, setLaunching] = useState<{ name: string; icon?: string } | null>(null);
   const cast = useCastReceiver();
   const activity = useRef(Date.now());
 
@@ -49,6 +50,11 @@ export default function App() {
         poke();
       }),
       window.tvbox.onCommand(() => poke()),
+      window.tvbox.onActivity(() => poke()),
+      window.tvbox.onLaunching((a) => {
+        setLaunching(a);
+        poke();
+      }),
       window.tvbox.onToast((t) => {
         const id = seq++;
         setToasts((x) => [...x.slice(-2), { id, ...t }]);
@@ -71,15 +77,16 @@ export default function App() {
     return () => clearInterval(t);
   }, [idle.screensaver, idle.screensaverMinutes, target, cast.active]);
 
-  // local keyboard / TV remote (HDMI-CEC keys arrive as media keys) + auto-hidden cursor
+  // the "Starting…" screen disappears by itself if the program never shows up
   useEffect(() => {
-    let cursorTimer: ReturnType<typeof setTimeout>;
-    const onMove = () => {
-      document.body.classList.remove('hide-cursor');
-      clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(() => document.body.classList.add('hide-cursor'), 2500);
-      poke();
-    };
+    if (!launching) return;
+    const t = setTimeout(() => setLaunching(null), 90_000);
+    return () => clearTimeout(t);
+  }, [launching]);
+
+  // local keyboard / TV remote (HDMI-CEC keys arrive as media keys).
+  // The mouse pointer is hidden by the main process (it also covers YouTube on top of this page).
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el.tagName === 'INPUT') return;
@@ -88,14 +95,8 @@ export default function App() {
       if (k === ' ' || k.startsWith('Arrow')) e.preventDefault();
       window.tvbox.localKey(k === 'а' ? 'f' : k === 'ь' ? 'm' : k);
     };
-    window.addEventListener('mousemove', onMove);
     window.addEventListener('keydown', onKey);
-    onMove();
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('keydown', onKey);
-      clearTimeout(cursorTimer);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   let screen;
@@ -108,6 +109,7 @@ export default function App() {
   return (
     <div className="relative h-full w-full">
       {screen}
+      {launching && <LaunchScreen app={launching} />}
       <div className="pointer-events-none absolute right-[2.5vw] top-[3vh] z-50 flex w-[30vw] flex-col gap-3">
         {toasts.map((t) => {
           const Icon = t.kind === 'success' ? CheckCircle2 : t.kind === 'error' ? XCircle : t.kind === 'warning' ? AlertTriangle : Info;
@@ -120,6 +122,25 @@ export default function App() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** Full-screen "Starting Jackbox…" while a program launched from the remote opens. */
+function LaunchScreen({ app }: { app: { name: string; icon?: string } }) {
+  return (
+    <div className="absolute inset-0 z-40 flex animate-fade-in flex-col items-center justify-center bg-ink-950/95 backdrop-blur-2xl">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute left-1/2 top-1/2 h-[60vh] w-[60vh] -translate-x-1/2 -translate-y-1/2 animate-pulse-dot rounded-full bg-ember/10 blur-[120px]" />
+      </div>
+      <div className="relative flex h-[11rem] w-[11rem] items-center justify-center rounded-[2.5rem] border border-white/10 bg-ink-800/80 shadow-2xl">
+        {app.icon ? <img src={app.icon} alt="" className="h-[6.5rem] w-[6.5rem] object-contain" /> : <span className="text-[5rem] font-extrabold text-ember">{app.name.charAt(0)}</span>}
+        <div className="absolute -inset-[2.7rem] rounded-full border-[0.22rem] border-white/[0.06]" />
+        <div className="absolute -inset-[2.7rem] animate-spin rounded-full border-[0.22rem] border-transparent border-t-ember" style={{ animationDuration: '1.1s' }} />
+      </div>
+      <p className="relative mt-[5.2rem] text-[1.1rem] font-bold uppercase tracking-[0.3em] text-fg-dim">Запускаем</p>
+      <h1 className="relative mt-[0.8rem] max-w-[70vw] text-center text-[3.2rem] font-extrabold leading-tight">{app.name}</h1>
+      <p className="relative mt-[1.2rem] text-[1.2rem] text-fg-muted">Откроется на весь экран · тачпад и стрелки — на пульте</p>
     </div>
   );
 }

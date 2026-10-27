@@ -3,6 +3,7 @@ import { Server, type Socket } from 'socket.io';
 import {
   Events,
   TV_REQUEST_EVENTS,
+  TV_STREAM_EVENTS,
   TV_BROADCAST_EVENTS,
   WEBRTC_EVENTS,
   EMPTY_PLAYER_STATE,
@@ -13,6 +14,8 @@ import {
   randomCode,
   type Ack,
   type AccountRole,
+  type AppsState,
+  type YoutubeState,
   type AuthPayload,
   type AuthResult,
   type GuestsUpdatePayload,
@@ -30,6 +33,8 @@ import {
   type User,
 } from '@tvbox/shared';
 import type { BackendConfig } from './config';
+
+const KNOWN_EVENTS = new Set<string>(Object.values(Events));
 import type { JsonStore } from './store';
 import type { AuthService } from './auth';
 
@@ -92,7 +97,9 @@ export function createHub(httpServer: HttpServer, deps: HubDeps): Hub {
     catalog: MediaItem[];
     torrents: TorrentInfo[];
     idle: IdleSettings | null;
-  } = { player: { ...EMPTY_PLAYER_STATE }, catalog: [], torrents: [], idle: null };
+    apps: AppsState | null;
+    youtube: YoutubeState | null;
+  } = { player: { ...EMPTY_PLAYER_STATE }, catalog: [], torrents: [], idle: null, apps: null, youtube: null };
 
   const sockets = (): HubSocket[] => Array.from(io.sockets.sockets.values()) as HubSocket[];
   const adminState = () => store.getAdminState(config.ownerEmail);
@@ -150,6 +157,8 @@ export function createHub(httpServer: HttpServer, deps: HubDeps): Hub {
       torrents: cache.torrents,
       idle: cache.idle,
       admin: socket.data.user?.role === 'owner' ? adminState() : null,
+      apps: cache.apps,
+      youtube: cache.youtube,
     };
     socket.emit(Events.SYNC, sync);
   }
@@ -173,6 +182,14 @@ export function createHub(httpServer: HttpServer, deps: HubDeps): Hub {
   io.on('connection', (raw: Socket) => {
     const socket = raw as HubSocket;
     socket.data = { isTv: false };
+
+    // A newer remote / TV may send events this server doesn't know yet: answer them instead of
+    // leaving the sender waiting for a timeout (and tell it to update the server).
+    socket.onAny((event: string, ...args: unknown[]) => {
+      if (KNOWN_EVENTS.has(event)) return;
+      const ack = args[args.length - 1];
+      if (typeof ack === 'function') (ack as AckFn)({ ok: false, error: 'server_outdated' });
+    });
 
     // ------------------------------------------------------------- auth
     socket.on(Events.PING, (_d: unknown, ack?: AckFn) => reply(ack, { ok: true }));
@@ -252,6 +269,17 @@ export function createHub(httpServer: HttpServer, deps: HubDeps): Hub {
       });
     }
 
+    // ------------------------------------------------------------- remote -> TV streams (touchpad), no acks
+    for (const evt of TV_STREAM_EVENTS) {
+      socket.on(evt, (data: unknown) => {
+        const user = socket.data.user;
+        if (!user || socket.data.isTv || !tvSocket) return;
+        if (!canPerformEvent(user.role, evt, store.dictatorMode)) return;
+        if (!data || typeof data !== 'object') return;
+        tvSocket.emit(evt, data);
+      });
+    }
+
     // ------------------------------------------------------------- TV -> remotes broadcasts
     for (const evt of TV_BROADCAST_EVENTS) {
       socket.on(evt, (data: unknown) => {
@@ -260,6 +288,8 @@ export function createHub(httpServer: HttpServer, deps: HubDeps): Hub {
         else if (evt === Events.CATALOG && Array.isArray(data)) cache.catalog = data as MediaItem[];
         else if (evt === Events.TORRENTS && Array.isArray(data)) cache.torrents = data as TorrentInfo[];
         else if (evt === Events.IDLE) cache.idle = data as IdleSettings;
+        else if (evt === Events.APPS_STATE) cache.apps = data as AppsState;
+        else if (evt === Events.YOUTUBE_STATE) cache.youtube = data as YoutubeState;
         io.to('remotes').emit(evt, data);
       });
     }

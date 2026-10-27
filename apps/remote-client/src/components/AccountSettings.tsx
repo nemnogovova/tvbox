@@ -1,3 +1,4 @@
+import { ActivationCode } from './DPad';
 import { useEffect, useRef, useState } from 'react';
 import {
   Check,
@@ -423,11 +424,12 @@ export function TvExtrasCard() {
   const releases = useReleases();
   const [s, setS] = useState<TvSettings | null>(null);
   const [updating, setUpdating] = useState(false);
+  const yt = useStore((st) => st.youtube);
 
   useEffect(() => {
     if (!tvOnline) return;
     void request<TvSettings>(Events.TV_SETTINGS_GET).then((r) => r.ok && r.data && setS(r.data));
-  }, [tvOnline]);
+  }, [tvOnline, yt?.signedIn]);
   if (!tvOnline) return null;
 
   const version = s?.version || tvVersion;
@@ -440,7 +442,7 @@ export function TvExtrasCard() {
         <ServiceRow
           icon={<Youtube size={18} className="text-[#ff3d3d]" />}
           title="Аккаунт YouTube на ТВ"
-          status={s ? (s.youtubeSignedIn ? 'вход выполнен' : 'без аккаунта') : '…'}
+          status={yt?.code ? 'ждём подтверждения кода' : s ? (s.youtubeSignedIn ? 'аккаунт подключён' : 'без аккаунта') : '…'}
           ok={!!s?.youtubeSignedIn}
           action={
             s?.youtubeSignedIn ? (
@@ -454,12 +456,17 @@ export function TvExtrasCard() {
                 Выйти
               </button>
             ) : (
-              <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => act(Events.YOUTUBE_LOGIN, {})}>
-                Войти на ТВ
+              <button className="btn-primary px-3 py-1.5 text-xs" onClick={() => act(Events.YOUTUBE_LOGIN, {})}>
+                Подключить
               </button>
             )
           }
         />
+        {yt?.code && !s?.youtubeSignedIn && (
+          <div className="overflow-hidden rounded-b-none">
+            <ActivationCode code={yt.code} />
+          </div>
+        )}
         <ServiceRow
           icon={<Download size={18} />}
           title={`TVBox для ТВ ${version ? `· ${version}` : ''}`}
@@ -483,8 +490,8 @@ export function TvExtrasCard() {
         />
       </div>
       <p className="mt-3 text-xs leading-relaxed text-fg-dim">
-        YouTube на ТВ открывается как обычный сайт youtube.com, поэтому играют и ролики, запрещённые для встраивания. После входа доступны подписки, Premium без рекламы и
-        видео 18+. Вход выполняется на экране телевизора — понадобятся клавиатура и мышь.
+        YouTube на ТВ — это настоящий YouTube для телевизоров: главная, подписки, плейлисты, история и поиск, управление стрелками с пульта. Реклама вырезается ещё до
+        показа. Аккаунт подключается кодом: откройте yt.be/activate на телефоне и введите код — на ТВ ничего печатать не нужно.
       </p>
     </Section>
   );

@@ -1,6 +1,6 @@
 {
   "name": "@tvbox/remote-client",
-  "version": "3.0.2",
+  "version": "3.0.9",
   "private": true,
   "type": "module",
   "scripts": {
