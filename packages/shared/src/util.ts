@@ -14,6 +14,18 @@ export function extractYouTubeId(input: string): string | null {
   return null;
 }
 
+/** Playlist id of a YouTube link (…?list=PL…), or null. Radio mixes (RD…) included. */
+export function extractYouTubeList(input: string): string | null {
+  const m = /[?&]list=([A-Za-z0-9_-]{10,})/.exec((input || '').trim());
+  return m ? m[1] : null;
+}
+
+/** Position in a playlist (…&index=5, 1-based), or undefined. */
+export function extractYouTubeIndex(input: string): number | undefined {
+  const m = /[?&]index=(\d{1,4})/.exec(input || '');
+  return m ? Math.max(1, parseInt(m[1], 10)) : undefined;
+}
+
 /** Extract a start time (seconds) from a YouTube URL (?t=90, ?t=1m30s, &start=90). */
 export function extractYouTubeStart(input: string): number | undefined {
   const m = (input || '').match(/[?&#](?:t|start)=([0-9hms]+)/);

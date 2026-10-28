@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerSaveBlocker, screen, type WebContents } from 'electron';
+import { app, BrowserWindow, ipcMain, powerSaveBlocker, screen, session, type WebContents } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -31,10 +31,11 @@ import { SystemVolume, powerAction } from './core/system';
 import { Connection } from './core/connection';
 import { PlayerController } from './core/player';
 import { listDirectory } from './core/filesystem';
-import { YouTubeController, navKeyFromKeyboard } from './core/youtube';
+import { AD_HOSTS, YouTubeController, navKeyFromKeyboard } from './core/youtube';
 import { MusicService, registerMusicRoutes } from './core/music';
 import { Updater } from './core/updater';
 import { Uploads } from './core/uploads';
+import { Previews } from './core/previews';
 import { sendFile } from './core/media-server';
 import { DesktopHelper } from './core/desktop';
 import { AppLauncher } from './core/apps';
@@ -83,6 +84,8 @@ async function main(): Promise<void> {
   const volume = new SystemVolume();
   const conn = new Connection(config);
   const youtube = new YouTubeController(() => win, db);
+  // YouTube videos in the screensaver play in the TVBox page itself: no ads there either
+  session.defaultSession.webRequest.onBeforeRequest({ urls: AD_HOSTS }, (_d, cb) => cb({ cancel: true }));
   const desktop = new DesktopHelper();
   const catalog = new CatalogService(tmdb, () => library.list());
   const indexer = new IndexerClient(() => config.value.indexer);
@@ -92,9 +95,25 @@ async function main(): Promise<void> {
   const music = new MusicService(db, dataDir());
   registerMusicRoutes(server, music);
   const uploads = new Uploads(dataDir());
-  server.route('/screensaver-file', (req, res, url) => {
-    const p = uploads.resolve(url.searchParams.get('n') || '');
+  const previews = new Previews(dataDir(), (n) => uploads.resolve(n));
+  /** Size pictures are shown at: the TV's screen in physical pixels (at most 4K). */
+  const screenPixels = () => {
+    const d = screen.getPrimaryDisplay();
+    const w = Math.round(d.size.width * d.scaleFactor);
+    const h = Math.round(d.size.height * d.scaleFactor);
+    const k = Math.min(1, 3840 / Math.max(w, 1), 2160 / Math.max(h, 1));
+    return { w: Math.max(640, Math.round(w * k)), h: Math.max(360, Math.round(h * k)) };
+  };
+  server.route('/screensaver-file', async (req, res, url) => {
+    const name = url.searchParams.get('n') || '';
+    const p = uploads.resolve(name);
     if (!p) return void res.writeHead(404).end();
+    // ?v=display: a copy at the screen's size (huge photos decode in an instant instead of seconds)
+    if (url.searchParams.get('v') === 'display') {
+      const { w, h } = screenPixels();
+      const d = await previews.display(name, w, h).catch(() => null);
+      if (d) return sendFile(req, res, d);
+    }
     sendFile(req, res, p);
   });
   const updater = new Updater(() => config.value.serverUrl);
@@ -159,6 +178,11 @@ async function main(): Promise<void> {
   youtube.on('attached', () => cursor.nudge());
 
   const getIdle = (): IdleSettings => ({ ...DEFAULT_IDLE_SETTINGS, ...(db.getJson<Partial<IdleSettings>>('idle') || {}) });
+  /** Uploaded files the idle screen uses (screensaver media + home background). */
+  const idleFiles = (idle: IdleSettings): string[] =>
+    [...(idle.screensaverMedia || []).map((m) => m.src), idle.wallpaper || '']
+      .filter((src) => src.startsWith('tvbox-file:'))
+      .map((src) => src.slice('tvbox-file:'.length));
 
   const applyAutostart = () => {
     if (!app.isPackaged) return;
@@ -184,6 +208,7 @@ async function main(): Promise<void> {
     youtube.toast(message);
   };
 
+  player.notify = (message, kind) => toast(message, kind);
   library.on('changed', pushCatalog);
   library.on('tmdb-error', (msg: string) => toast(msg, 'error'));
   torrents.on('update', (list) => conn.emitEvent(Events.TORRENTS, list));
@@ -203,6 +228,7 @@ async function main(): Promise<void> {
   let blocker: number | null = null;
   player.on('state', (s) => {
     conn.emitEvent(Events.PLAYER_STATE, s);
+    torrents.setPlaybackActive(player.mediaActive);
     const playing = player.isPlaying;
     if (playing && blocker === null) blocker = powerSaveBlocker.start('prevent-display-sleep');
     if (!playing && blocker !== null) {
@@ -342,23 +368,71 @@ async function main(): Promise<void> {
     const id = String(p.torrentId || '');
     const cur = player.currentTorrentFile();
     if (cur?.torrentId === id) player.stop();
+    const playingId = player.state().mediaId;
+    const playingItem = playingId ? library.get(playingId) : undefined;
     const removed = torrents.remove(id, !!p.deleteFiles);
+    // its file was being watched from the library: stop before it disappears
+    if (playingItem && removed.some((f) => path.resolve(f).toLowerCase() === path.resolve(playingItem.path).toLowerCase())) player.stop();
     if (torrentMeta.delete(id.toLowerCase())) saveTorrentMeta();
     if (removed.length) library.removePaths(removed);
     return ok();
   });
   conn.handle(Events.FS_LIST, async (p) => ok(await listDirectory(p.path ? String(p.path) : undefined, config.value.mediaDirs, p.purpose === 'apps' ? 'apps' : 'media')));
+  const publishIdle = (idle: IdleSettings) => {
+    conn.emitEvent(Events.IDLE, idle);
+    send('tv:idle', idle);
+  };
+  /**
+   * In the background: previews for the remote (files uploaded before previews existed) and
+   * screen-sized copies of the pictures, so the screensaver never waits for a huge photo.
+   */
+  let preparing = false;
+  let prepareAgain = false;
+  const prepareIdleMedia = async (): Promise<void> => {
+    if (preparing) {
+      prepareAgain = true;
+      return;
+    }
+    preparing = true;
+    try {
+      do {
+        prepareAgain = false;
+        const idle = getIdle();
+        const thumbs = new Map<string, string>();
+        for (const m of idle.screensaverMedia || []) {
+          if (!m.src.startsWith('tvbox-file:') || m.thumb) continue;
+          const t = await previews.thumbDataUrl(m.src.slice('tvbox-file:'.length)).catch(() => null);
+          if (t) thumbs.set(m.id, t);
+        }
+        const wall = idle.wallpaper?.startsWith('tvbox-file:') && !idle.wallpaperThumb ? await previews.thumbDataUrl(idle.wallpaper.slice('tvbox-file:'.length)).catch(() => null) : null;
+        if (thumbs.size || wall) {
+          const cur = getIdle(); // the settings may have changed meanwhile
+          const upd: IdleSettings = {
+            ...cur,
+            screensaverMedia: (cur.screensaverMedia || []).map((m) => (!m.thumb && thumbs.has(m.id) ? { ...m, thumb: thumbs.get(m.id) } : m)),
+            ...(wall && cur.wallpaper === idle.wallpaper ? { wallpaperThumb: wall } : {}),
+          };
+          db.setJson('idle', upd);
+          publishIdle(upd);
+        }
+        const { w, h } = screenPixels();
+        for (const n of idleFiles(getIdle())) await previews.display(n, w, h).catch(() => null);
+      } while (prepareAgain);
+    } finally {
+      preparing = false;
+    }
+  };
   conn.handle(Events.IDLE_GET, () => ok(getIdle()));
   conn.handle(Events.IDLE_UPDATE, (p) => {
     const { _meta, ...patch } = p as Record<string, unknown>;
     void _meta;
     const next: IdleSettings = { ...getIdle(), ...(patch as Partial<IdleSettings>) };
     db.setJson('idle', next);
-    if (Array.isArray(next.screensaverMedia)) {
-      uploads.prune(next.screensaverMedia.filter((m) => m.src.startsWith('tvbox-file:')).map((m) => m.src.slice('tvbox-file:'.length)));
-    }
-    conn.emitEvent(Events.IDLE, next);
-    send('tv:idle', next);
+    const files = idleFiles(next);
+    uploads.prune(files);
+    previews.prune(files);
+    publishIdle(next);
+    void prepareIdleMedia();
     return ok(next);
   });
   const settingsInfo = async (): Promise<TvSettings> => ({
@@ -607,10 +681,12 @@ async function main(): Promise<void> {
       return fail(e);
     }
   });
-  conn.handle(Events.UPLOAD_END, (p) => {
+  conn.handle(Events.UPLOAD_END, async (p) => {
     try {
       const f = uploads.end(String(p.uploadId));
-      return ok({ src: `tvbox-file:${f.name}`, name: f.name });
+      // a small preview right away, so the remote shows what was uploaded
+      const thumb = (await previews.thumbDataUrl(f.name).catch(() => null)) || undefined;
+      return ok({ src: `tvbox-file:${f.name}`, name: f.name, thumb });
     } catch (e) {
       return fail(e);
     }
@@ -722,6 +798,7 @@ async function main(): Promise<void> {
   cursor.start();
   torrents.restore();
   void library.scan();
+  setTimeout(() => void prepareIdleMedia(), 15_000);
   void volume.refresh().then(() => player.emit('state', player.state()));
   setInterval(() => {
     const before = { ...volume.state };

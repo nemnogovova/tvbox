@@ -6,7 +6,7 @@ import { Home } from './components/Home';
 import { Pairing } from './components/Pairing';
 import { Player } from './components/Player';
 import { CastView } from './components/CastView';
-import { Screensaver } from './components/Screensaver';
+import { Screensaver, ScreensaverPreload } from './components/Screensaver';
 import { useCastReceiver } from './hooks/useCastReceiver';
 
 const INITIAL_STATUS: TvStatus = { conn: 'connecting', serverUrl: '', publicUrl: '', tvName: '', pairing: null, paired: true };
@@ -103,12 +103,19 @@ export default function App() {
   if (cast.active) screen = <CastView cast={cast} />;
   else if (target) screen = <Player target={target} />;
   else if (status.conn === 'pairing' || (!status.paired && status.conn !== 'online')) screen = <Pairing status={status} />;
-  else if (saver && idle.screensaver !== 'off') screen = <Screensaver idle={idle} catalog={catalog} />;
+  else if (saver && idle.screensaver !== 'off')
+    screen = (
+      // the screensaver fades in instead of cutting in
+      <div className="h-full w-full animate-xfade bg-black">
+        <Screensaver idle={idle} catalog={catalog} />
+      </div>
+    );
   else screen = <Home idle={idle} catalog={catalog} status={status} />;
 
   return (
     <div className="relative h-full w-full">
       {screen}
+      {!saver && !target && <ScreensaverPreload idle={idle} />}
       {launching && <LaunchScreen app={launching} />}
       <div className="pointer-events-none absolute right-[2.5vw] top-[3vh] z-50 flex w-[30vw] flex-col gap-3">
         {toasts.map((t) => {

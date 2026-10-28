@@ -130,8 +130,10 @@ export class SystemVolume {
   }
 
   async refresh(): Promise<VolumeState> {
+    if (this.applying) return this.state;
     const s = await this.read();
-    if (s) this.state = s;
+    // a change from the remote started meanwhile: that one wins over the older reading
+    if (s && !this.applying) this.state = s;
     return this.state;
   }
 
@@ -153,23 +155,47 @@ export class SystemVolume {
     }
   }
 
+  /** Volume asked for but not yet handed to the OS (presses in a row collapse into the last one). */
+  private want: number | null = null;
+  private applying: Promise<void> | null = null;
+
+  /**
+   * Answers at once with the new volume; the OS is updated in the background. Several quick
+   * changes (phone volume keys held down) end in one OS call with the latest value instead of a
+   * queue — and late OS answers no longer drag the reported volume back to an older value.
+   */
   async setVolume(volume: number): Promise<VolumeState> {
     const v = Math.max(0, Math.min(1, volume));
     this.state = { volume: v, muted: false };
-    try {
-      if (process.platform === 'win32') {
-        const s = (await this.psCommand(`set ${v.toFixed(3)}`)) && (await this.psCommand('mute 0'));
-        if (s) this.state = s;
-      } else if (process.platform === 'darwin') {
-        await run('osascript', ['-e', `set volume output volume ${Math.round(v * 100)} without output muted`]);
-      } else {
-        await run('pactl', ['set-sink-volume', '@DEFAULT_SINK@', `${Math.round(v * 100)}%`]);
-        await run('pactl', ['set-sink-mute', '@DEFAULT_SINK@', '0']);
-      }
-    } catch {
-      // keep optimistic in-memory value
-    }
+    this.want = v;
+    if (!this.applying) this.applying = this.apply().finally(() => (this.applying = null));
     return this.state;
+  }
+
+  /** Wait until the OS has the last requested volume (tests, shutdown). */
+  async settled(): Promise<VolumeState> {
+    while (this.applying) await this.applying;
+    return this.state;
+  }
+
+  private async apply(): Promise<void> {
+    while (this.want !== null) {
+      const v = this.want;
+      this.want = null;
+      try {
+        if (process.platform === 'win32') {
+          const s = (await this.psCommand(`set ${v.toFixed(3)}`)) && (await this.psCommand('mute 0'));
+          if (s && this.want === null) this.state = s;
+        } else if (process.platform === 'darwin') {
+          await run('osascript', ['-e', `set volume output volume ${Math.round(v * 100)} without output muted`]);
+        } else {
+          await run('pactl', ['set-sink-volume', '@DEFAULT_SINK@', `${Math.round(v * 100)}%`]);
+          await run('pactl', ['set-sink-mute', '@DEFAULT_SINK@', '0']);
+        }
+      } catch {
+        // keep the in-memory value
+      }
+    }
   }
 
   async setMuted(muted: boolean): Promise<VolumeState> {

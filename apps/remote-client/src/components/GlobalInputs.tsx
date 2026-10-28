@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Download, ListPlus, Magnet, Play, Upload, Youtube, Link2 } from 'lucide-react';
 import { Events, classifyLink, type LinkKindGuess } from '@tvbox/shared';
-import { act, control, toast, useStore } from '../store/store';
+import { act, control, effectivePlayer, toast, useStore } from '../store/store';
 import { openLink, sendTorrentFile } from '../lib/actions';
 import { startFileCast } from '../store/cast';
-import { consumePendingLinks, onIncomingLink, onVolumeButton, setVolumeKeysEnabled, type IncomingLinkEvent } from '../lib/native';
+import { consumePendingLinks, isNative, minimizeApp, onBackButton, onIncomingLink, onVolumeButton, setVolumeKeysEnabled, type IncomingLinkEvent } from '../lib/native';
+import { goBack, installBackHandling } from '../lib/back';
+import { installHaptics } from '../lib/haptics';
 import { getPref } from '../lib/config';
 import { Sheet } from './ui';
 
@@ -136,7 +138,20 @@ export function GlobalInputs() {
   // ---------------------------------------------------------------- Android: volume keys + magnet/.torrent intents
   useEffect(() => {
     void setVolumeKeysEnabled(getPref('volumeKeys', true));
-    const offVol = onVolumeButton((e) => void control({ type: 'VOLUME_STEP', delta: e.direction === 'up' ? 0.05 : -0.05 }));
+    // absolute volume from what the slider shows: presses in a row add up at once on the phone,
+    // and the TV ends up exactly there (relative steps raced the TV's slower confirmations)
+    const offVol = onVolumeButton((e) => {
+      const p = effectivePlayer(useStore.getState());
+      const base = p.muted ? 0 : p.volume;
+      const v = Math.round(Math.max(0, Math.min(1, base + (e.direction === 'up' ? 0.05 : -0.05))) * 100) / 100;
+      void control({ type: 'VOLUME', volume: v });
+    });
+    // back gesture: close the topmost popup / page; with nothing open, go to the background
+    installBackHandling(isNative());
+    installHaptics();
+    const offBack = onBackButton(() => {
+      if (!goBack()) void minimizeApp();
+    });
     const handle = (e: IncomingLinkEvent) => {
       if (e.kind === 'torrent' && e.torrentBase64) {
         void act(Events.TORRENT_ADD, { torrentBase64: e.torrentBase64, name: e.name }, `«${e.name || 'Торрент'}» отправлен на ТВ`);
@@ -150,6 +165,7 @@ export function GlobalInputs() {
     return () => {
       offVol();
       offLink();
+      offBack();
     };
   }, []);
 

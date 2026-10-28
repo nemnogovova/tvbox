@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Readable } from 'node:stream';
+import { PassThrough, type Readable } from 'node:stream';
 import { mediaKindOfFile, type TorrentFileInfo, type TorrentInfo } from '@tvbox/shared';
 import type { TvDatabase, TorrentRow } from './db';
 
@@ -10,6 +11,8 @@ interface WtFile {
   name: string;
   path: string;
   length: number;
+  /** byte offset of the file inside the torrent */
+  offset: number;
   downloaded: number;
   progress: number;
   done: boolean;
@@ -32,6 +35,8 @@ interface WtTorrent extends EventEmitter {
   numPeers: number;
   timeRemaining: number;
   files: WtFile[];
+  pieceLength: number;
+  bitfield?: { get: (i: number) => boolean };
   ready: boolean;
   done: boolean;
   destroyed: boolean;
@@ -42,6 +47,7 @@ interface WtClient extends EventEmitter {
   add: (input: string | Buffer, opts: Record<string, unknown>, cb?: (t: WtTorrent) => void) => WtTorrent;
   destroy: (cb?: () => void) => void;
   throttleUpload: (rate: number) => void;
+  throttleDownload?: (rate: number) => void;
 }
 
 interface StoredFile {
@@ -89,6 +95,66 @@ export class TorrentEngine extends EventEmitter {
     private readonly getDownloadDir: () => string,
   ) {
     super();
+  }
+
+  // ------------------------------------------------------------------ playback comes first
+  // WebTorrent runs in the same process that serves the video to the player. A season downloading
+  // at full speed can keep that process so busy that the picture freezes every few seconds.
+  // While something plays, the download speed is lowered as long as the process lags, and
+  // raised again once it is responsive (and fully released when playback stops).
+  private playing = false;
+  private lag: IntervalHistogram | null = null;
+  private lagTimer: NodeJS.Timeout | null = null;
+  private limit = -1;
+  private calm = 0;
+
+  setPlaybackActive(active: boolean): void {
+    if (active === this.playing) return;
+    this.playing = active;
+    if (active) {
+      if (!this.lag) {
+        this.lag = monitorEventLoopDelay({ resolution: 20 });
+        this.lag.enable();
+      }
+      this.lag.reset();
+      this.calm = 0;
+      if (!this.lagTimer) this.lagTimer = setInterval(() => this.adjustForPlayback(), 3000);
+    } else {
+      if (this.lagTimer) clearInterval(this.lagTimer);
+      this.lagTimer = null;
+      this.lag?.disable();
+      this.lag = null;
+      this.setLimit(-1);
+    }
+  }
+
+  private adjustForPlayback(): void {
+    const h = this.lag;
+    if (!h || !this.client) return;
+    const p99 = h.percentile(99) / 1e6;
+    const mean = h.mean / 1e6;
+    h.reset();
+    const speed = Array.from(this.entries.values()).reduce((sum, e) => sum + (e.torrent && !e.torrent.destroyed ? e.torrent.downloadSpeed : 0), 0);
+    const busy = p99 > 150 || mean > 50;
+    if (busy && speed > 512 * 1024) {
+      this.calm = 0;
+      this.setLimit(Math.max(1024 * 1024, Math.round((this.limit > 0 ? Math.min(this.limit, speed) : speed) * 0.5)));
+      console.log(`[torrents] playback lags (event loop p99 ${p99.toFixed(0)} ms): downloads limited to ${(this.limit / 1048576).toFixed(1)} MB/s`);
+    } else if (!busy && this.limit > 0 && ++this.calm >= 4) {
+      this.calm = 0;
+      const next = Math.round(this.limit * 1.5);
+      this.setLimit(next > 64 * 1024 * 1024 ? -1 : next);
+    }
+  }
+
+  private setLimit(bytesPerSec: number): void {
+    if (bytesPerSec === this.limit) return;
+    this.limit = bytesPerSec;
+    try {
+      this.client?.throttleDownload?.(bytesPerSec);
+    } catch {
+      // older WebTorrent: no throttling
+    }
   }
 
   private ensureClient(): WtClient {
@@ -290,6 +356,11 @@ export class TorrentEngine extends EventEmitter {
     return removedPaths;
   }
 
+  /** Playable files of a torrent (index + name), in torrent order. */
+  playableFiles(id: string): { index: number; name: string }[] {
+    return (this.entries.get(id)?.files || []).filter((f) => isPlayable(f.name)).map((f) => ({ index: f.index, name: f.name }));
+  }
+
   has(id: string): boolean {
     return this.entries.has(id);
   }
@@ -317,11 +388,65 @@ export class TorrentEngine extends EventEmitter {
     return this.entries.get(id)?.files.find((f) => f.index === index)?.length ?? 0;
   }
 
-  /** Stream a file straight from the swarm (prioritised, sequential). */
+  /**
+   * First byte (file-relative, from `start` up to `end`) that is not downloaded and verified yet;
+   * end + 1 when the whole range is on disk.
+   */
+  firstMissingByte(id: string, index: number, start: number, end: number): number {
+    const t = this.entries.get(id)?.torrent;
+    const f = t?.files[index];
+    if (!t || !f || !t.ready) return start;
+    if (f.done) return end + 1;
+    const bf = t.bitfield;
+    const pl = t.pieceLength;
+    if (!bf || !(pl > 0)) return start;
+    const first = Math.floor((f.offset + start) / pl);
+    const last = Math.floor((f.offset + end) / pl);
+    for (let p = first; p <= last; p++) {
+      if (!bf.get(p)) return Math.max(start, p * pl - f.offset);
+    }
+    return end + 1;
+  }
+
+  /**
+   * Read a byte range of a torrent file. What is already downloaded is read straight from the
+   * file on disk (fast, no torrent machinery in between); only from the first missing piece on
+   * does the read go through the swarm, which waits for those pieces and fetches them first.
+   * A "100 %" episode whose last piece (shared with the next episode) is not verified yet used to
+   * be read entirely through the swarm stream — and stuttered while the season kept downloading.
+   */
   createReadStream(id: string, index: number, start: number, end: number): Readable | null {
     const e = this.entries.get(id);
-    const f = e?.torrent?.files[index];
-    if (!e || !f) return null;
+    const t = e?.torrent;
+    const f = t?.files[index];
+    if (!e || !t || !f) return null;
+    const diskPath = path.join(t.path, f.path);
+    const missing = this.firstMissingByte(id, index, start, end);
+    if (missing > start && fs.existsSync(diskPath)) {
+      const out = new PassThrough({ highWaterMark: 1024 * 1024 });
+      const disk = fs.createReadStream(diskPath, { start, end: Math.min(end, missing - 1), highWaterMark: 1024 * 1024 });
+      disk.on('error', (err) => out.destroy(err));
+      if (missing > end) {
+        disk.pipe(out);
+        return out;
+      }
+      // the rest of this file comes first in the swarm while the downloaded part is being read
+      f.select(1);
+      disk.pipe(out, { end: false });
+      disk.on('end', () => {
+        if (out.destroyed) return;
+        const rest = this.swarmStream(e, f, missing, end);
+        rest.on('error', (err) => out.destroy(err));
+        out.on('close', () => rest.destroy());
+        rest.pipe(out);
+      });
+      return out;
+    }
+    return this.swarmStream(e, f, start, end);
+  }
+
+  /** Stream a file straight from the swarm (prioritised, sequential). */
+  private swarmStream(e: Entry, f: WtFile, start: number, end: number): Readable {
     f.select(1);
     const s = f.createReadStream({ start, end });
     e.streams++;

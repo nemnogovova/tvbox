@@ -7,6 +7,8 @@ import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.view.KeyEvent;
 
+import androidx.activity.OnBackPressedCallback;
+
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -37,8 +39,70 @@ public class TvboxNativePlugin extends Plugin {
     @Override
     public void load() {
         instance = this;
+        volumeKeysEnabled = getContext().getSharedPreferences(RemoteService.PREFS, android.content.Context.MODE_PRIVATE).getBoolean("volumeKeys", true);
         Intent intent = getActivity().getIntent();
         if (intent != null) handleIntent(intent);
+        // Back gesture / button: the remote closes its popups first (JS decides);
+        // without a listener it falls through to the system (app goes to background)
+        getActivity().getOnBackPressedDispatcher().addCallback(getActivity(), new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (hasListeners("backButton")) {
+                    notifyListeners("backButton", new JSObject());
+                    return;
+                }
+                setEnabled(false);
+                getActivity().getOnBackPressedDispatcher().onBackPressed();
+                setEnabled(true);
+            }
+        });
+    }
+
+    private android.os.Vibrator vibrator() {
+        android.content.Context ctx = getContext();
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            android.os.VibratorManager vm = (android.os.VibratorManager) ctx.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE);
+            return vm != null ? vm.getDefaultVibrator() : null;
+        }
+        return (android.os.Vibrator) ctx.getSystemService(android.content.Context.VIBRATOR_SERVICE);
+    }
+
+    /**
+     * Haptic feedback for the remote's buttons (used without looking at the phone):
+     * tick / click / heavy / double / detent (slider steps) — Android's own click effects where the phone has them.
+     */
+    @PluginMethod
+    public void haptic(PluginCall call) {
+        String kind = call.getString("kind", "tick");
+        try {
+            android.os.Vibrator v = vibrator();
+            if (v == null || !v.hasVibrator()) {
+                call.resolve();
+                return;
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                int effect = "heavy".equals(kind) ? android.os.VibrationEffect.EFFECT_HEAVY_CLICK
+                        : "double".equals(kind) ? android.os.VibrationEffect.EFFECT_DOUBLE_CLICK
+                        : "detent".equals(kind) ? android.os.VibrationEffect.EFFECT_TICK
+                        : android.os.VibrationEffect.EFFECT_CLICK;
+                v.vibrate(android.os.VibrationEffect.createPredefined(effect));
+            } else if (android.os.Build.VERSION.SDK_INT >= 26) {
+                if ("double".equals(kind)) v.vibrate(android.os.VibrationEffect.createWaveform(new long[] { 0, 25, 70, 25 }, -1));
+                else v.vibrate(android.os.VibrationEffect.createOneShot("heavy".equals(kind) ? 30 : "detent".equals(kind) ? 6 : 14, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                v.vibrate("heavy".equals(kind) ? 30 : "detent".equals(kind) ? 6 : 14);
+            }
+        } catch (Exception ignored) {
+            // no vibration on this device
+        }
+        call.resolve();
+    }
+
+    /** Nothing left to close in the remote: go to the background like the home gesture (keeps the app alive). */
+    @PluginMethod
+    public void minimize(PluginCall call) {
+        getActivity().runOnUiThread(() -> getActivity().moveTaskToBack(true));
+        call.resolve();
     }
 
     @Override
@@ -186,9 +250,15 @@ public class TvboxNativePlugin extends Plugin {
         call.resolve(out);
     }
 
+    /**
+     * Phone volume keys → TV volume, or back to the phone's own volume. Applies to the open app
+     * and to the background service (lock screen), which otherwise kept steering the TV.
+     */
     @PluginMethod
     public void setVolumeKeysEnabled(PluginCall call) {
         volumeKeysEnabled = Boolean.TRUE.equals(call.getBoolean("enabled", true));
+        getContext().getSharedPreferences(RemoteService.PREFS, android.content.Context.MODE_PRIVATE).edit().putBoolean("volumeKeys", volumeKeysEnabled).apply();
+        RemoteService.applyVolumeKeys(volumeKeysEnabled);
         call.resolve();
     }
 

@@ -28,6 +28,7 @@ import { IdleEditor } from '../components/IdleEditor';
 import { AccessCard, AccountCard, AppsCard, TvExtrasCard } from '../components/AccountSettings';
 import { getPref, setPref } from '../lib/config';
 import { isNative, openExternal, setVolumeKeysEnabled, startBackgroundControl, stopBackgroundControl } from '../lib/native';
+import { hapticsAvailable, hapticsEnabled, setHapticsEnabled } from '../lib/haptics';
 import { getToken } from '../lib/config';
 import { googleSignOut } from '../lib/google';
 
@@ -262,12 +263,28 @@ function TvSettingsCard() {
 function AppCard() {
   const serverUrl = useStore((s) => s.serverUrl);
   const [volKeys, setVolKeys] = useState(getPref('volumeKeys', true));
+  const [haptics, setHaptics] = useState(hapticsEnabled());
   const [bg, setBg] = useState(getPref('bgControl', true));
   const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState(serverUrl);
   const native = isNative();
   return (
     <Section title="Подключение" icon={native ? <Smartphone size={18} /> : <Server size={18} />}>
+      {hapticsAvailable() && (
+        <div className="mb-4 flex items-center gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold">Виброотклик</div>
+            <div className="text-xs text-fg-dim">Каждое нажатие ощущается — пультом можно пользоваться не глядя</div>
+          </div>
+          <Toggle
+            checked={haptics}
+            onChange={(v) => {
+              setHaptics(v);
+              setHapticsEnabled(v);
+            }}
+          />
+        </div>
+      )}
       {native && (
         <div className="mb-4 flex items-center gap-4">
           <div className="min-w-0 flex-1">

@@ -280,7 +280,7 @@ function NowPlaying() {
           ) : (
             <button
               className="icon-btn h-11 w-11"
-              disabled={!p.queue.length}
+              disabled={!p.queue.length && !p.hasNext}
               onClick={() => control({ type: "NEXT" })}
               aria-label="Следующее"
             >

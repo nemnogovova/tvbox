@@ -37,10 +37,13 @@ function MediaPlayer({ target }: { target: PlayTarget }) {
   const [streamStart, setStreamStart] = useState(initial);
   const wanted = useRef(initial);
   const offsetRef = useRef<number>(initial);
+  // every seek restarts the stream, even to the same point (back to 0 from 0 used to do nothing)
+  const [seekNo, setSeekNo] = useState(0);
   const seekTo = useCallback(
     (pos: number) => {
       const from = offsetRef.current + (ref.current?.currentTime || 0);
       wanted.current = pos;
+      setSeekNo((n) => n + 1);
       if (!copyMode || pos <= 0.5) {
         offsetRef.current = pos;
         setStreamStart(pos);
@@ -72,14 +75,18 @@ function MediaPlayer({ target }: { target: PlayTarget }) {
     if (offset === null) seekTo(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [subId, setSubId] = useState<string | null>(null);
+  const [subId, setSubId] = useState<string | null>(target.subtitleId ?? null);
   const [osd, setOsd] = useState(true);
   const [status, setStatus] = useState<RendererStatus>('loading');
   const [, force] = useState(0);
   const lastReport = useRef(0);
   const osdTimer = useRef<ReturnType<typeof setTimeout>>();
 
-  const src = !transcoded ? target.url! : offset === null ? undefined : `${target.transcode!.base}${streamStart > 0 ? `&start=${streamStart.toFixed(3)}` : ''}`;
+  const src = !transcoded
+    ? target.url!
+    : offset === null
+      ? undefined
+      : `${target.transcode!.base}${streamStart > 0 ? `&start=${streamStart.toFixed(3)}` : ''}${seekNo > 0 ? `&n=${seekNo}` : ''}`;
 
   const position = () => (offset === null || !ref.current ? wanted.current : offset + (ref.current.currentTime || 0));
 
@@ -127,6 +134,23 @@ function MediaPlayer({ target }: { target: PlayTarget }) {
     return () => v.removeEventListener('loadedmetadata', onMeta);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
+
+  // When this player goes away, let go of the stream right now. A removed <video> keeps its HTTP
+  // connection open until it is garbage-collected; after a few films the browser's limit of 6
+  // connections to the media server was used up and the next video never started (black screen).
+  useEffect(() => {
+    const v = ref.current;
+    return () => {
+      if (!v) return;
+      try {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   // commands from the remote
   useEffect(() => {

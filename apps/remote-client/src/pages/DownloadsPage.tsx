@@ -171,7 +171,10 @@ function TorrentCard({ t }: { t: TorrentInfo }) {
             <button key={f.index} onClick={() => watch(f.index)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-white/5">
               <Play size={16} className="shrink-0 text-ember" />
               <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
-              <span className="tabular shrink-0 text-xs text-fg-dim">{Math.round(f.progress * 100)}%</span>
+              <span className={cx('tabular shrink-0 text-xs', f.progress >= 1 ? 'text-ok' : 'text-fg-dim')}>
+                {/* 99.6 % is not "100 %": an episode is ready only when every piece of it is */}
+                {f.progress >= 1 ? 'готово' : `${Math.min(99.9, Math.floor(f.progress * 1000) / 10)}%`}
+              </span>
             </button>
           ))}
         </div>

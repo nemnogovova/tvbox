@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseMediaName, showKeyFor } from './torrent-parse';
 import { canPerform, canPerformEvent, normalizeEmail } from './roles';
 import { Events } from './events';
-import { classifyLink, extractYouTubeId, extractYouTubeStart, formatDuration, normalizeLinkCode, randomCode } from './util';
+import { classifyLink, extractYouTubeId, extractYouTubeIndex, extractYouTubeList, extractYouTubeStart, formatDuration, normalizeLinkCode, randomCode } from './util';
 
 describe('parseMediaName', () => {
   it('parses a typical series release', () => {
@@ -116,5 +116,19 @@ describe('util', () => {
     const c = randomCode(6);
     expect(c).toMatch(/^[A-Z2-9]{6}$/);
     expect(normalizeLinkCode(' ab-c d ')).toBe('ABCD');
+  });
+});
+
+describe('YouTube playlists', () => {
+  it('finds the playlist of a link', () => {
+    expect(extractYouTubeList('https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG')).toBe('PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG');
+    expect(extractYouTubeList('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&index=3')).toBe('RDdQw4w9WgXcQ');
+    expect(extractYouTubeList('https://youtu.be/dQw4w9WgXcQ')).toBeNull();
+    expect(extractYouTubeIndex('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&index=3')).toBe(3);
+  });
+  it('a playlist-only link has no video id but is a YouTube link', () => {
+    const u = 'https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG';
+    expect(extractYouTubeId(u)).toBeNull();
+    expect(classifyLink(u)).toBe('youtube');
   });
 });

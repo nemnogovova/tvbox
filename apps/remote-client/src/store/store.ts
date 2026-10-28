@@ -1,3 +1,4 @@
+import { haptic } from '../lib/haptics';
 import { create } from 'zustand';
 import { io, type Socket } from 'socket.io-client';
 import {
@@ -104,6 +105,8 @@ const get = useStore.getState;
 let toastSeq = 1;
 export function toast(message: string, kind: ToastKind = 'info', ms = 3500): void {
   const id = toastSeq++;
+  // felt without looking: an error buzzes twice
+  if (kind === 'error') haptic('double');
   set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, message }] }));
   setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), ms);
 }
@@ -142,6 +145,7 @@ const ERROR_TEXT: Record<string, string> = {
   unsupported_type: 'Такой формат файла не поддерживается',
   too_large: 'Файл слишком большой',
   bad_youtube_link: 'Не похоже на ссылку YouTube',
+  youtube_playlist_unavailable: 'Плейлист не найден: он закрытый или удалён',
   server_outdated: 'Сервер TVBox устарел — на ПК запустите deploy.ps1',
   tv_outdated: 'На телевизоре старая версия TVBox — обновите её в настройках',
   no_tmdb_key: 'Для каталога нужен ключ TMDb — добавьте его в настройках ТВ',
@@ -170,11 +174,28 @@ export function getSocket(): Socket | null {
 export function request<T = unknown>(event: string, data?: unknown, timeoutMs = 25000): Promise<Ack<T>> {
   return new Promise((resolve) => {
     const s = socket;
-    if (!s || !s.connected) return resolve({ ok: false, error: 'offline' });
-    s.timeout(timeoutMs).emit(event, data ?? {}, (err: Error | null, res: Ack<T>) => {
-      if (err) resolve({ ok: false, error: 'tv_timeout' });
-      else resolve(res && typeof res === 'object' ? res : { ok: true });
-    });
+    if (!s) return resolve({ ok: false, error: 'offline' });
+    const send = () =>
+      s.timeout(timeoutMs).emit(event, data ?? {}, (err: Error | null, res: Ack<T>) => {
+        if (err) resolve({ ok: false, error: 'tv_timeout' });
+        else resolve(res && typeof res === 'object' ? res : { ok: true });
+      });
+    if (s.connected) return send();
+    // the phone just woke up and the socket is reconnecting: a press right then is not lost
+    if (s.active) {
+      const t = setTimeout(() => {
+        s.off('connect', go);
+        resolve({ ok: false, error: 'offline' });
+      }, 4000);
+      const go = () => {
+        clearTimeout(t);
+        // the server needs a moment to authenticate the fresh connection
+        setTimeout(send, 300);
+      };
+      s.once('connect', go);
+      return;
+    }
+    resolve({ ok: false, error: 'offline' });
   });
 }
 
@@ -223,7 +244,15 @@ export function connect(): void {
     authenticate();
     void checkServer(url);
   });
-  s.on('disconnect', () => set({ conn: 'offline' }));
+  s.on('disconnect', (reason) => {
+    set({ conn: 'offline' });
+    // the server closed this connection itself (e.g. the owner changed this account's role):
+    // socket.io does not reconnect on its own then — do it, unless access was taken away
+    if (reason === 'io server disconnect' && getToken())
+      setTimeout(() => {
+        if (socket === s && !s.connected) s.connect();
+      }, 800);
+  });
   s.on('connect_error', () => set({ conn: 'offline' }));
 
   s.on(Events.SYNC, (p: SyncPayload) =>
@@ -249,7 +278,13 @@ export function connect(): void {
   s.on(Events.CATALOG, (c: MediaItem[]) => set({ catalog: c }));
   s.on(Events.TORRENTS, (t: TorrentInfo[]) => set({ torrents: t }));
   s.on(Events.IDLE, (i: IdleSettings) => set({ idle: i }));
-  s.on(Events.ADMIN, (a: AdminState) => set({ admin: a }));
+  s.on(Events.ADMIN, (a: AdminState) => {
+    const was = new Set((get().admin?.accounts || []).filter((x) => x.role === 'pending').map((x) => x.id));
+    const fresh = (a?.accounts || []).filter((x) => x.role === 'pending' && !was.has(x.id));
+    // somebody asked for access while the owner had the remote open
+    if (isOwner(get()) && fresh.length) toast(`${fresh[0].name || fresh[0].username || 'Новый пользователь'} ждёт одобрения — Ещё → Настройки`, 'info', 6000);
+    set({ admin: a });
+  });
   s.on(Events.MUSIC_SOURCES_CHANGED, (m: MusicSource[]) => set({ musicSources: m }));
   s.on(Events.TOAST, (t: { kind?: ToastKind; message: string }) => t?.message && toast(t.message, t.kind || 'info'));
   s.on(Events.ERROR, (e: { message?: string }) => e?.message && toast(e.message, 'error'));
@@ -291,7 +326,10 @@ export function resumeConnection(force = false): void {
   } else if (force || away > 8000) {
     // probe: if the server doesn't answer quickly, reconnect
     let answered = false;
-    socket.timeout(2500).emit(Events.PING, {}, () => (answered = true));
+    // with .timeout() the callback also runs when nobody answered — then with an error
+    socket.timeout(2500).emit(Events.PING, {}, (err: unknown) => {
+      if (!err) answered = true;
+    });
     setTimeout(() => {
       if (!answered && socket) {
         set({ conn: 'connecting' });

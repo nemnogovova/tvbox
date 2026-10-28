@@ -14,6 +14,7 @@ import { MusicPage } from './pages/MusicPage';
 import { CatalogPage } from './pages/CatalogPage';
 import { AppsPage } from './pages/AppsPage';
 import { getPref, setPref } from './lib/config';
+import { useBack } from './lib/back';
 
 function usePath(): string {
   const [path, setPath] = useState(window.location.pathname);
@@ -64,6 +65,8 @@ function Main() {
     document.querySelector('main')?.scrollTo({ top: 0 });
   };
   const effective: Tab = desktop && tab === 'remote' ? 'catalog' : tab;
+  // back from any tab leads to the remote first (phones), then out of the app
+  useBack(!desktop && effective !== 'remote', () => setTab('remote'), 0);
   const moreSwitch = !desktop && MORE_TABS.includes(effective) && (
     <div className="mb-4">
       <Segmented<Tab>

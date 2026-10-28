@@ -103,6 +103,8 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
     const credential = String(req.body?.credential || '');
     if (!credential) return res.status(400).json({ ok: false, error: 'missing_credential' });
     const out = await auth.signInWithGoogle(credential);
+    // a new account may be waiting for approval: owners see the request right away
+    getHub()?.broadcastAdmin();
     if (!out.ok) return res.status(out.error === 'invalid_google_token' ? 401 : 403).json(out);
     return res.json({ ok: true, token: out.token, user: out.user });
   });
@@ -110,6 +112,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
   app.post('/api/auth/register', json, (req, res) => {
     if (!authLimit(`r:${req.ip}`)) return res.status(429).json({ ok: false, error: 'too_many_attempts' });
     const out = auth.register(String(req.body?.username || ''), String(req.body?.password || ''), req.body?.name ? String(req.body.name) : undefined);
+    if (out.ok || out.pending) getHub()?.broadcastAdmin();
     if (!out.ok) return res.status(out.error === 'pending_approval' ? 202 : 400).json(out);
     return res.json({ ok: true, token: out.token, user: out.user });
   });

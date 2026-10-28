@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -76,6 +77,22 @@ public class RemoteService extends Service {
     private boolean muted = false;
     private boolean tvOnline = false;
     private long lastVolumeCmd = 0;
+    /** Latest volume asked with the keys, not sent yet (-1: nothing pending). Steps are merged into one request. */
+    private volatile int pendingVolume = -1;
+    private static volatile RemoteService current;
+
+    /** The "phone volume keys control the TV" setting changed in the app. */
+    static void applyVolumeKeys(boolean enabled) {
+        RemoteService s = current;
+        if (s != null) s.main.post(() -> s.setVolumeRouting(enabled));
+    }
+
+    /** Volume keys: TV volume (remote playback) or the phone's own media volume. */
+    private void setVolumeRouting(boolean tv) {
+        if (session == null) return;
+        if (tv) session.setPlaybackToRemote(volumeProvider);
+        else session.setPlaybackToLocal(AudioManager.STREAM_MUSIC);
+    }
 
     static void start(Context ctx, String server, String token) {
         ctx.getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("server", server).putString("token", token).putBoolean("enabled", true).apply();
@@ -120,7 +137,7 @@ public class RemoteService extends Service {
                 setCurrentVolume(next);
                 volume = next;
                 lastVolumeCmd = System.currentTimeMillis();
-                send("{\"type\":\"VOLUME_STEP\",\"delta\":" + (direction * 0.05) + "}");
+                sendVolume(next);
             }
 
             @Override
@@ -128,11 +145,12 @@ public class RemoteService extends Service {
                 setCurrentVolume(value);
                 volume = value;
                 lastVolumeCmd = System.currentTimeMillis();
-                send("{\"type\":\"VOLUME\",\"volume\":" + (value / 100.0) + "}");
+                sendVolume(value);
             }
         };
-        session.setPlaybackToRemote(volumeProvider);
+        setVolumeRouting(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("volumeKeys", true));
         session.setActive(true);
+        current = this;
     }
 
     @Override
@@ -215,6 +233,30 @@ public class RemoteService extends Service {
         }
     }
 
+    /**
+     * Volume keys pressed in a row: one request with the latest absolute volume instead of
+     * a queue of steps (each step was its own HTTPS request, so the TV lagged far behind).
+     */
+    private void sendVolume(int value) {
+        pendingVolume = value;
+        worker.post(() -> {
+            int v = pendingVolume;
+            if (v < 0) return;
+            pendingVolume = -1;
+            try {
+                http("POST", "/api/control", "{\"type\":\"VOLUME\",\"volume\":" + (v / 100.0) + "}");
+            } catch (Exception e) {
+                Log.w(TAG, "volume failed: " + e.getMessage());
+            }
+            if (pendingVolume < 0) {
+                worker.removeCallbacks(fetchLater);
+                worker.postDelayed(fetchLater, 2600);
+            }
+        });
+    }
+
+    private final Runnable fetchLater = this::fetchState;
+
     private void send(String json) {
         worker.post(() -> {
             try {
@@ -251,8 +293,8 @@ public class RemoteService extends Service {
         }
         InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
         if (in == null) return null;
+        // no disconnect(): the connection stays in the keep-alive pool, the next command skips the TLS handshake
         String text = readAll(in);
-        c.disconnect();
         return new JSONObject(text);
     }
 
@@ -361,6 +403,7 @@ public class RemoteService extends Service {
 
     @Override
     public void onDestroy() {
+        if (current == this) current = null;
         running = false;
         worker.removeCallbacksAndMessages(null);
         thread.quitSafely();

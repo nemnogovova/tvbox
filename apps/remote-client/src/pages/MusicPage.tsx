@@ -33,6 +33,7 @@ import {
 import { act, errorText, isOwner, request, toast, useStore } from '../store/store';
 import { formatTotal, playTracks, queueTrack, useCover } from '../lib/music';
 import { getPref, setPref } from '../lib/config';
+import { useBack } from '../lib/back';
 import { Empty, Section, Segmented, Spinner, cx } from '../components/ui';
 
 type Detail = { type: 'album' | 'artist' | 'playlist'; id: string; sourceId: string; title: string };
@@ -59,6 +60,9 @@ export function MusicPage() {
   const [detail, setDetail] = useState<Detail[]>([]);
   const [query, setQuery] = useState('');
   const [manage, setManage] = useState(false);
+  useBack(manage, () => setManage(false));
+  useBack(detail.length > 0, () => setDetail((x) => x.slice(0, -1)));
+  useBack(!!query, () => setQuery(''));
 
   const source = sources?.find((s) => s.id === sourceId) || sources?.[0];
 

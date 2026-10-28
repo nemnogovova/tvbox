@@ -178,6 +178,7 @@ export function startMediaServer(torrents: TorrentEngine, rendererDir: string | 
         audioIndex: Number(url.searchParams.get('audio') || 0),
         copyVideo: url.searchParams.get('copy') === '1',
         videoCodec: url.searchParams.get('vcodec') || undefined,
+        light: url.searchParams.get('light') === '1',
       }),
     );
     if (!proc) {

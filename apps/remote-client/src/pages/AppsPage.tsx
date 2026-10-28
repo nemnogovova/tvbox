@@ -72,11 +72,6 @@ export function AppsPage() {
 
   const launch = async (a: AppEntry) => {
     setStarting(a.id);
-    try {
-      navigator.vibrate?.(15);
-    } catch {
-      // ignore
-    }
     const r = await act(Events.APPS_LAUNCH, { id: a.id });
     if (!r.ok) setStarting(null);
     else setTimeout(() => setStarting((x) => (x === a.id ? null : x)), 20000);

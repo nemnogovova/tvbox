@@ -14,6 +14,9 @@ export interface IncomingLinkEvent {
 interface TvboxNativePlugin {
   addListener(event: 'volumeButton', cb: (e: VolumeButtonEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: 'incoming', cb: (e: IncomingLinkEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'backButton', cb: () => void): Promise<PluginListenerHandle>;
+  minimize(): Promise<void>;
+  haptic(options: { kind: string }): Promise<void>;
   openExternal(options: { url: string }): Promise<void>;
   setVolumeKeysEnabled(options: { enabled: boolean }): Promise<void>;
   consumePending(): Promise<{ items: IncomingLinkEvent[] }>;
@@ -26,7 +29,7 @@ const Native = registerPlugin<TvboxNativePlugin>('TvboxNative');
 
 export const isNative = (): boolean => Capacitor.isNativePlatform();
 
-function listen<E>(event: 'volumeButton' | 'incoming', cb: (e: E) => void): () => void {
+function listen<E>(event: 'volumeButton' | 'incoming' | 'backButton', cb: (e: E) => void): () => void {
   if (!isNative()) return () => {};
   let removed = false;
   let handle: PluginListenerHandle | null = null;
@@ -42,6 +45,18 @@ function listen<E>(event: 'volumeButton' | 'incoming', cb: (e: E) => void): () =
 
 export const onVolumeButton = (cb: (e: VolumeButtonEvent) => void) => listen<VolumeButtonEvent>('volumeButton', cb);
 export const onIncomingLink = (cb: (e: IncomingLinkEvent) => void) => listen<IncomingLinkEvent>('incoming', cb);
+/** Android back gesture / button (the app decides what it closes). */
+export const onBackButton = (cb: () => void) => listen<unknown>('backButton', () => cb());
+
+/** Send the app to the background (Android), like the home gesture. */
+export async function minimizeApp(): Promise<void> {
+  if (!isNative()) return;
+  try {
+    await Native.minimize();
+  } catch {
+    // older APK: nothing to do
+  }
+}
 
 export async function consumePendingLinks(): Promise<IncomingLinkEvent[]> {
   if (!isNative()) return [];
@@ -98,5 +113,19 @@ export async function nativeAppVersion(): Promise<string | null> {
     return (await Native.getAppInfo()).version || null;
   } catch {
     return null;
+  }
+}
+
+let nativeHapticMissing = false;
+
+/** Phone vibration through Android's haptic effects. false → not available (older APK): use the web API. */
+export async function nativeHaptic(kind: string): Promise<boolean> {
+  if (!isNative() || nativeHapticMissing) return false;
+  try {
+    await Native.haptic({ kind });
+    return true;
+  } catch {
+    nativeHapticMissing = true;
+    return false;
   }
 }

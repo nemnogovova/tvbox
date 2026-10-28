@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Code2, Film, Globe, Image as ImageIcon, LayoutDashboard, Link2, Pencil, Plus, Trash2, Upload } from 'lucide-react';
-import { DEFAULT_IDLE_SETTINGS, Events, type IdleSettings, type ScreensaverItem, type WidgetConfig } from '@tvbox/shared';
+import { ArrowDown, ArrowUp, Code2, Film, Globe, Image as ImageIcon, LayoutDashboard, Link2, Pencil, Plus, Trash2, Upload, Youtube } from 'lucide-react';
+import { DEFAULT_IDLE_SETTINGS, Events, classifyLink, extractYouTubeId, extractYouTubeList, type IdleSettings, type ScreensaverItem, type UploadEndResult, type WidgetConfig } from '@tvbox/shared';
 import { act, errorText, request, toast, useStore } from '../store/store';
 import { Section, Segmented, Sheet, Spinner, Toggle, cx } from './ui';
 
@@ -99,6 +99,8 @@ export function IdleEditor() {
           <Code2 size={15} /> HTML / CSS / JS
         </button>
       </div>
+
+      <HomeBackgroundEditor draft={draft} update={update} />
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div>
@@ -277,8 +279,8 @@ function WidgetSheet({
 const VIDEO_RE = /\.(mp4|webm|m4v|mov)(\?|#|$)/i;
 const CHUNK = 512 * 1024;
 
-async function uploadToTv(file: File, onProgress: (p: number) => void): Promise<string> {
-  const begin = await request<{ uploadId: string; chunkSize?: number }>(Events.UPLOAD_BEGIN, { name: file.name, size: file.size, type: file.type, purpose: 'screensaver' });
+async function uploadToTv(file: File, onProgress: (p: number) => void, purpose: 'screensaver' | 'wallpaper' = 'screensaver'): Promise<UploadEndResult> {
+  const begin = await request<{ uploadId: string; chunkSize?: number }>(Events.UPLOAD_BEGIN, { name: file.name, size: file.size, type: file.type, purpose });
   if (!begin.ok || !begin.data) throw new Error(errorText(begin.error));
   const { uploadId } = begin.data;
   const size = Math.min(begin.data.chunkSize || CHUNK, CHUNK);
@@ -291,10 +293,24 @@ async function uploadToTv(file: File, onProgress: (p: number) => void): Promise<
     index++;
     onProgress(Math.min(1, (off + size) / file.size));
   }
-  const end = await request<{ src: string }>(Events.UPLOAD_END, { uploadId });
+  const end = await request<UploadEndResult>(Events.UPLOAD_END, { uploadId }, 90000);
   if (!end.ok || !end.data) throw new Error(errorText(end.error));
-  return end.data.src;
+  return end.data;
 }
+
+/** What the remote shows for a screensaver item: the TV's preview, YouTube's thumbnail or the picture itself. */
+export function previewOf(it: Pick<ScreensaverItem, 'type' | 'src' | 'thumb'>): string | null {
+  if (it.thumb) return it.thumb;
+  if (it.type === 'youtube') {
+    const id = extractYouTubeId(it.src);
+    return id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : null;
+  }
+  if (it.type === 'image' && /^https?:/i.test(it.src)) return it.src;
+  return null;
+}
+
+const itemLabel = (it: ScreensaverItem) =>
+  it.name || (it.type === 'youtube' ? (extractYouTubeList(it.src) && !extractYouTubeId(it.src) ? 'Плейлист YouTube' : 'YouTube') : it.src.replace(/^tvbox-file:|^https?:\/\//, ''));
 
 function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update: (p: Partial<IdleSettings>) => void }) {
   const items = draft.screensaverMedia || [];
@@ -305,7 +321,14 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
   const newId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
   const addUrl = () => {
-    const u = url.trim();
+    let u = url.trim();
+    if (classifyLink(u) === 'youtube') {
+      if (!/^https?:/i.test(u)) u = `https://${u}`;
+      if (!extractYouTubeId(u) && !extractYouTubeList(u)) return toast('В ссылке нет ни видео, ни плейлиста YouTube', 'error');
+      setItems([...items, { id: newId(), type: 'youtube', src: u }]);
+      setUrl('');
+      return;
+    }
     if (!/^https?:\/\//i.test(u)) return toast('Нужна ссылка, начинающаяся с http(s)://', 'error');
     setItems([...items, { id: newId(), type: VIDEO_RE.test(u) ? 'video' : 'image', src: u }]);
     setUrl('');
@@ -322,8 +345,8 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
       }
       setUploading({ name: f.name, p: 0 });
       try {
-        const src = await uploadToTv(f, (p) => setUploading({ name: f.name, p }));
-        next = [...next, { id: newId(), type: isVideo ? 'video' : 'image', src, name: f.name }];
+        const up = await uploadToTv(f, (p) => setUploading({ name: f.name, p }));
+        next = [...next, { id: newId(), type: isVideo ? 'video' : 'image', src: up.src, name: f.name, thumb: up.thumb }];
         setItems(next);
       } catch (e) {
         toast(`${f.name}: ${(e as Error).message}`, 'error');
@@ -339,15 +362,15 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
       {items.length > 0 && (
         <div className="mb-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
           {items.map((it) => {
-            const local = it.src.startsWith('tvbox-file:');
+            const pic = previewOf(it);
             return (
               <div key={it.id} className="group relative aspect-video overflow-hidden rounded-xl bg-ink-750">
-                {!local && it.type === 'image' ? (
-                  <img src={it.src} alt="" className="h-full w-full object-cover" loading="lazy" />
+                {pic ? (
+                  <img src={pic} alt="" className="h-full w-full object-cover" loading="lazy" />
                 ) : (
                   <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-2 text-fg-dim">
-                    {it.type === 'video' ? <Film size={20} /> : <ImageIcon size={20} />}
-                    <span className="w-full truncate text-center text-[10px]">{it.name || it.src.replace(/^tvbox-file:|^https?:\/\//, '')}</span>
+                    {it.type === 'video' ? <Film size={20} /> : it.type === 'youtube' ? <Youtube size={20} /> : <ImageIcon size={20} />}
+                    <span className="w-full truncate text-center text-[10px]">{itemLabel(it)}</span>
                   </div>
                 )}
                 <button
@@ -357,7 +380,11 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
                 >
                   <Trash2 size={13} />
                 </button>
-                {it.type === 'video' && <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 text-[9px] font-bold uppercase">видео</span>}
+                {it.type !== 'image' && (
+                  <span className={cx('absolute bottom-1 left-1 rounded px-1.5 text-[9px] font-bold uppercase', it.type === 'youtube' ? 'bg-[#ff0033]/90 text-white' : 'bg-black/70')}>
+                    {it.type === 'youtube' ? 'YouTube' : 'видео'}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -372,7 +399,7 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
       >
         <div className="relative flex-1">
           <Link2 size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-fg-dim" />
-          <input className="field pl-9" placeholder="Ссылка на картинку или видео (.mp4)" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />
+          <input className="field pl-9" placeholder="Картинка, видео (.mp4) или YouTube" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />
         </div>
         <button className="btn-soft" disabled={!url.trim()}>
           <Plus size={16} />
@@ -415,7 +442,92 @@ function ScreensaverMediaEditor({ draft, update }: { draft: IdleSettings; update
           </label>
         </div>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-fg-dim">Загруженные файлы хранятся на ТВ-компьютере. Видео меняются, когда доиграют до конца. Не забудьте нажать «Применить».</p>
+      <p className="mt-3 text-xs leading-relaxed text-fg-dim">Загруженные файлы хранятся на ТВ-компьютере. Видео и ролики YouTube меняются, когда доиграют до конца (плейлист YouTube играет по кругу). Не забудьте нажать «Применить».</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Home screen background
+// ---------------------------------------------------------------------------
+
+function HomeBackgroundEditor({ draft, update }: { draft: IdleSettings; update: (p: Partial<IdleSettings>) => void }) {
+  const mode = draft.homeBackground || (draft.wallpaper ? 'image' : 'auto');
+  const [url, setUrl] = useState('');
+  const [uploading, setUploading] = useState<number | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pic = draft.wallpaperThumb || (draft.wallpaper && /^https?:/i.test(draft.wallpaper) ? draft.wallpaper : null);
+
+  const upload = async (f: File | undefined) => {
+    if (!f) return;
+    if (!f.type.startsWith('image/')) return toast(`${f.name}: это не картинка`, 'error');
+    setUploading(0);
+    try {
+      const up = await uploadToTv(f, setUploading, 'wallpaper');
+      update({ homeBackground: 'image', wallpaper: up.src, wallpaperThumb: up.thumb });
+    } catch (e) {
+      toast(`${f.name}: ${(e as Error).message}`, 'error');
+    }
+    setUploading(null);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  return (
+    <div className="mt-5">
+      <label className="label">Фон главного экрана</label>
+      <div className="mt-2 overflow-x-auto">
+        <Segmented<NonNullable<IdleSettings['homeBackground']>>
+          value={mode}
+          onChange={(v) => update({ homeBackground: v })}
+          options={[
+            { value: 'auto', label: 'Из фильмов' },
+            { value: 'image', label: 'Своя картинка' },
+            { value: 'plain', label: 'Нет' },
+          ]}
+        />
+      </div>
+      {mode === 'auto' && <p className="mt-2 text-xs text-fg-dim">Кадр из фильма или сериала, который смотрели последним.</p>}
+      {mode === 'image' && (
+        <div className="mt-3 flex flex-col gap-2 rounded-2xl bg-ink-800 p-3">
+          <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-ink-750">
+            {pic ? (
+              <img src={pic} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-1 text-xs text-fg-dim">
+                <ImageIcon size={22} />
+                {draft.wallpaper ? 'Картинка выбрана' : 'Картинка не выбрана'}
+              </div>
+            )}
+          </div>
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const u = url.trim();
+              if (!/^https?:\/\//i.test(u)) return toast('Нужна ссылка на картинку, начинающаяся с http(s)://', 'error');
+              update({ homeBackground: 'image', wallpaper: u, wallpaperThumb: undefined });
+              setUrl('');
+            }}
+          >
+            <input className="field flex-1" placeholder="Ссылка на картинку" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />
+            <button className="btn-soft" disabled={!url.trim()} aria-label="Поставить">
+              <Plus size={16} />
+            </button>
+          </form>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => void upload(e.target.files?.[0])} />
+          <button className="btn-soft w-full" disabled={uploading !== null} onClick={() => fileRef.current?.click()}>
+            {uploading !== null ? (
+              <>
+                <Spinner size={15} /> Загрузка · {Math.round(uploading * 100)}%
+              </>
+            ) : (
+              <>
+                <Upload size={16} /> Загрузить с устройства
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

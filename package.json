@@ -1,6 +1,6 @@
 {
   "name": "tvbox",
-  "version": "3.0.9",
+  "version": "3.1.1",
   "private": true,
   "description": "Smart TV client + remote control + signaling server (monorepo)",
   "workspaces": [

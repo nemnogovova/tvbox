@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { formatDuration, type IdleSettings, type MediaItem, type WidgetConfig } from '@tvbox/shared';
 import type { TvStatus } from '../bridge';
+import { mediaSrc } from '../media-src';
 
 export function useNow(intervalMs = 1000): Date {
   const [now, setNow] = useState(() => new Date());
@@ -39,7 +40,11 @@ export function Home({ idle, catalog, status }: { idle: IdleSettings; catalog: M
 
   return (
     <div className="relative h-full w-full overflow-hidden">
-      <Ambient image={idle.wallpaper || backdrop} />
+      {idle.homeBackground === 'image' && idle.wallpaper ? (
+        <Ambient image={mediaSrc(idle.wallpaper, 'display')} custom />
+      ) : (
+        <Ambient image={idle.homeBackground === 'plain' ? undefined : backdrop} />
+      )}
       {/* every row (however many the widgets need) gets an equal share of the screen — nothing can push the layout */}
       <div
         className="relative grid h-full w-full gap-[1.6vw] overflow-hidden p-[3vw]"
@@ -56,18 +61,19 @@ export function Home({ idle, catalog, status }: { idle: IdleSettings; catalog: M
   );
 }
 
-export function Ambient({ image }: { image?: string }) {
+/** Background of the home screen. A picture chosen by the user is shown brighter than film art. */
+export function Ambient({ image, custom }: { image?: string; custom?: boolean }) {
   return (
     <div className="pointer-events-none absolute inset-0">
       {image ? (
-        <img key={image} src={image} alt="" className="absolute inset-0 h-full w-full animate-drift object-cover opacity-40" />
+        <img key={image} src={image} alt="" className={`absolute inset-0 h-full w-full animate-drift object-cover ${custom ? 'opacity-80' : 'opacity-40'}`} />
       ) : (
         <>
           <div className="absolute -left-[10vw] -top-[20vh] h-[70vh] w-[60vw] rounded-full bg-ember/15 blur-[140px]" />
           <div className="absolute -bottom-[25vh] right-[-10vw] h-[70vh] w-[60vw] rounded-full bg-indigo-500/10 blur-[160px]" />
         </>
       )}
-      <div className="absolute inset-0 bg-gradient-to-br from-ink-950/80 via-ink-950/60 to-ink-950/90" />
+      <div className={`absolute inset-0 bg-gradient-to-br ${custom ? 'from-ink-950/60 via-ink-950/25 to-ink-950/70' : 'from-ink-950/80 via-ink-950/60 to-ink-950/90'}`} />
     </div>
   );
 }
@@ -171,12 +177,26 @@ interface Weather {
   hours: { t: string; temp: number; code: number }[];
 }
 
+/**
+ * The home screen comes back after every film and screensaver: the forecast is kept for a while
+ * instead of being asked again each time (the free weather service limits requests).
+ */
+const weatherCache = new Map<string, { at: number; w: Weather }>();
+const WEATHER_TTL = 20 * 60 * 1000;
+
 function WeatherWidget({ city }: { city: string }) {
-  const [w, setW] = useState<Weather | null>(null);
+  const cached = weatherCache.get(city);
+  const [w, setW] = useState<Weather | null>(cached?.w ?? null);
   const [err, setErr] = useState(false);
   useEffect(() => {
     let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
+      const c = weatherCache.get(city);
+      if (c && Date.now() - c.at < WEATHER_TTL) {
+        if (!cancelled) setW(c.w);
+        return;
+      }
       try {
         const g = await (await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=1&language=ru&name=${encodeURIComponent(city || 'Belgrade')}`)).json();
         const r = g.results?.[0];
@@ -191,8 +211,7 @@ function WeatherWidget({ city }: { city: string }) {
           const i = Math.max(0, nowIdx) + d - 1;
           return { t: String(f.hourly.time[i]).slice(11, 16), temp: f.hourly.temperature_2m[i], code: f.hourly.weather_code[i] };
         });
-        if (!cancelled)
-          setW({
+        const data: Weather = {
             place: r.name,
             temp: f.current.temperature_2m,
             code: f.current.weather_code,
@@ -202,17 +221,23 @@ function WeatherWidget({ city }: { city: string }) {
             max: f.daily.temperature_2m_max[0],
             min: f.daily.temperature_2m_min[0],
             hours,
-          });
+          };
+        weatherCache.set(city, { at: Date.now(), w: data });
+        if (!cancelled) setW(data);
         setErr(false);
       } catch {
-        if (!cancelled) setErr(true);
+        if (cancelled) return;
+        setErr(true);
+        // the network may come up a bit later (after boot): try again soon, not in 15 minutes
+        retry = setTimeout(() => void load(), 60_000);
       }
     };
     void load();
-    const t = setInterval(load, 15 * 60 * 1000);
+    const t = setInterval(load, WEATHER_TTL);
     return () => {
       cancelled = true;
       clearInterval(t);
+      clearTimeout(retry);
     };
   }, [city]);
 
@@ -308,7 +333,11 @@ function PosterRow({ title, items, wide, empty }: { title: string; items: MediaI
 function QrWidget({ url }: { url: string }) {
   const [img, setImg] = useState('');
   useEffect(() => {
-    void QRCode.toDataURL(url, { margin: 1, width: 480, color: { dark: '#0b0c10', light: '#ffffff' } }).then(setImg);
+    // the address is not known yet while connecting
+    if (!url) return setImg('');
+    void QRCode.toDataURL(url, { margin: 1, width: 480, color: { dark: '#0b0c10', light: '#ffffff' } })
+      .then(setImg)
+      .catch(() => setImg(''));
   }, [url]);
   let host = url;
   try {

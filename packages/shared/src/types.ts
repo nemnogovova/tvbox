@@ -99,6 +99,8 @@ export interface PlayerState {
   repeat?: RepeatMode;
   /** Can go to the previous track */
   hasPrevious?: boolean;
+  /** Something follows: the queue, or the next episode of the series */
+  hasNext?: boolean;
   updatedAt: number;
 }
 
@@ -248,13 +250,21 @@ export interface WidgetConfig {
 
 export type ScreensaverKind = 'off' | 'black' | 'clock' | 'wallpaper' | 'media';
 
-/** Picture or video for the screensaver: an http(s) URL or a file uploaded to the TV (tvbox-file:<name>). */
+/**
+ * Picture or video for the screensaver: an http(s) URL, a file uploaded to the TV
+ * (tvbox-file:<name>) or a YouTube video / playlist (src = the link).
+ */
 export interface ScreensaverItem {
   id: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'youtube';
   src: string;
   name?: string;
+  /** Small preview for the remote (data: URL made by the TV, or an image URL) */
+  thumb?: string;
 }
+
+/** Background of the TVBox home screen */
+export type HomeBackground = 'auto' | 'image' | 'plain';
 
 export interface IdleSettings {
   widgets: WidgetConfig[];
@@ -270,7 +280,12 @@ export interface IdleSettings {
   screensaverClock?: boolean;
   /** Mute screensaver videos */
   screensaverMuted?: boolean;
+  /** auto – art of what was watched last, image – `wallpaper`, plain – no picture */
+  homeBackground?: HomeBackground;
+  /** Home screen picture: http(s) URL or tvbox-file:<name> */
   wallpaper?: string;
+  /** Preview of the uploaded wallpaper for the remote */
+  wallpaperThumb?: string;
 }
 
 export const DEFAULT_WIDGETS: WidgetConfig[] = [

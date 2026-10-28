@@ -1,9 +1,12 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import fs from 'node:fs';
+import { net } from 'electron';
 import {
   EMPTY_PLAYER_STATE,
   extractYouTubeId,
+  extractYouTubeIndex,
+  extractYouTubeList,
   extractYouTubeStart,
   mediaKindOfFile,
   parseMediaName,
@@ -64,6 +67,22 @@ const trackLabel = (t: { lang?: string; title?: string; channels?: string }, i: 
   return t.channels && /5\.1|7\.1/.test(t.channels) ? `${base} (${t.channels.replace(/\(.*\)/, '')})` : base;
 };
 
+const SHORT_LANG: Record<string, string> = { ru: 'rus', en: 'eng', uk: 'ukr', ua: 'ukr', sr: 'srp', de: 'ger', fr: 'fre', es: 'spa', it: 'ita', ja: 'jpn', ko: 'kor', zh: 'chi', pl: 'pol' };
+
+/** "rus.forced" → "Русский · форсированные" (external subtitle file names). */
+export function subtitleFileLabel(raw: string): string {
+  const words = raw.split(/[.\s_-]+/).filter(Boolean);
+  const nice = words.map((w) => {
+    const k = w.toLowerCase();
+    if (LANG[k]) return LANG[k];
+    if (SHORT_LANG[k]) return LANG[SHORT_LANG[k]];
+    if (k === 'forced') return 'форсированные';
+    if (k === 'sdh' || k === 'cc') return 'для слабослышащих';
+    return w;
+  });
+  return nice.join(' · ') || raw;
+}
+
 let keySeq = 1;
 const newKey = () => `p${Date.now().toString(36)}${keySeq++}`;
 
@@ -98,7 +117,7 @@ export class PlayerController extends EventEmitter {
       t.title = title || (changed ? 'YouTube' : t.title);
       t.subtitle = author || undefined;
       t.poster = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-      t.backdrop = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+      t.backdrop = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
       if (changed) t.startAt = 0;
       if (changed && !title) {
         void youtubeTitle(`https://www.youtube.com/watch?v=${videoId}`).then((x) => {
@@ -134,7 +153,7 @@ export class PlayerController extends EventEmitter {
     }
     if (opts.videoId) return this.play({ source: 'youtube', url: `https://www.youtube.com/watch?v=${opts.videoId}` });
     if (this.cast.active) this.d.send('cast:stop');
-    if (this.target?.mediaId && this.report?.duration) this.d.library.saveProgress(this.target.mediaId, this.report.position, this.report.duration);
+    if (this.target?.mediaId && this.report?.duration) this.d.library.saveProgress(this.target.mediaId, this.report.position, this.report.duration, true);
     if (this.request) this.history.push(this.request);
     this.request = null;
     this.load({ key: newKey(), kind: 'youtube', source: 'youtube', title: 'YouTube', subtitle: 'Главная, подписки, плейлисты' });
@@ -163,6 +182,7 @@ export class PlayerController extends EventEmitter {
       queue: this.queue,
       repeat: this.repeat,
       hasPrevious: this.history.length > 0,
+      hasNext: this.hasNext(),
       updatedAt: Date.now(),
     };
     if (this.cast.active) {
@@ -205,6 +225,22 @@ export class PlayerController extends EventEmitter {
     }
   }
 
+  /** A video / song from the media server is playing or buffering (not YouTube, not a picture). */
+  private stalls = 0;
+  private resumeTries = 0;
+  /** when the current stream first played / when the user last jumped (seek, other track) */
+  private playingSince = 0;
+  private lastJumpAt = 0;
+  private stallTimes: number[] = [];
+  /** set by main: a notice on the TV and the remotes */
+  notify?: (message: string, kind: 'info' | 'warning') => void;
+
+  get mediaActive(): boolean {
+    const t = this.target;
+    const st = this.report?.status;
+    return !!t && t.kind !== 'youtube' && t.kind !== 'image' && (st === 'playing' || st === 'loading');
+  }
+
   get isPlaying(): boolean {
     return this.cast.active || (!!this.target && this.report?.status === 'playing');
   }
@@ -214,11 +250,33 @@ export class PlayerController extends EventEmitter {
     if (!this.target || r.key !== this.target.key) return;
     const prevStatus = this.report?.status;
     this.report = r;
+    // stalls are written to the log (logs/tvbox.log): how the file was played tells why
+    if (r.status === 'playing' && !this.playingSince) this.playingSince = Date.now();
+    // a real stall: not the start of the stream, not right after a seek / track change
+    const settled = this.playingSince > 0 && Date.now() - this.playingSince > 6000 && Date.now() - this.lastJumpAt > 8000;
+    if (prevStatus === 'playing' && r.status === 'loading' && settled) {
+      this.stalls++;
+      const t = this.target;
+      const how = t.url ? 'direct' : /[?&]copy=1/.test(t.transcode?.base || '') ? 'remux (video copied)' : 'full transcode';
+      console.log(`[player] stall #${this.stalls} at ${Math.round(r.position)}s · ${how} · ${t.source} · ${t.title}`);
+      // The PC converts the video slower than it plays: the picture stops every few seconds.
+      // After a second stall within a minute, switch to the fastest conversion at 720p.
+      const now = Date.now();
+      this.stallTimes = [...this.stallTimes.filter((x) => now - x < 60_000), now];
+      const base = t.transcode?.base || '';
+      if (how === 'full transcode' && !/[?&]light=1/.test(base) && this.stallTimes.length >= 2) {
+        console.log('[player] the TV cannot convert fast enough: lighter conversion (720p, fastest)');
+        this.stallTimes = [];
+        this.notify?.('Компьютер не успевает перекодировать это видео — включаю облегчённое качество (720p)', 'warning');
+        this.load({ ...t, key: newKey(), url: undefined, transcode: { base: `${base}&light=1` }, subtitleId: r.subtitleId ?? null, startAt: r.position || t.startAt });
+        return;
+      }
+    }
 
     if (r.needFallback) {
       if (this.target.fallback) {
         console.log('[player] switching to transcoding');
-        this.load({ ...this.target, key: newKey(), url: undefined, transcode: this.target.fallback, fallback: undefined, startAt: r.position || this.target.startAt });
+        this.load({ ...this.target, key: newKey(), url: undefined, transcode: this.target.fallback, fallback: undefined, subtitleId: r.subtitleId ?? null, startAt: r.position || this.target.startAt });
         return;
       }
       this.report = { ...r, status: 'error', error: r.error || 'Не удалось воспроизвести файл' };
@@ -229,12 +287,22 @@ export class PlayerController extends EventEmitter {
     }
     if (this.target.mediaId && r.duration > 0 && (Date.now() - this.lastSave > 5000 || r.status !== 'playing')) {
       this.lastSave = Date.now();
-      this.d.library.saveProgress(this.target.mediaId, r.position, r.duration);
+      this.d.library.saveProgress(this.target.mediaId, r.position, r.duration, r.status !== 'playing');
     }
     if (r.status === 'ended') {
+      // A converted stream that stops long before the end is a broken stream (the torrent stalled,
+      // ffmpeg died), not the end of the film: continue from there instead of jumping to the next one.
+      const dur = r.duration || this.target.duration || 0;
+      if (this.target.transcode && dur > 60 && r.position < dur - 20 && this.resumeTries < 3) {
+        this.resumeTries++;
+        console.log(`[player] stream ended early at ${Math.round(r.position)}s of ${Math.round(dur)}s — resuming (${this.resumeTries})`);
+        this.load({ ...this.target, key: newKey(), subtitleId: r.subtitleId ?? null, startAt: r.position });
+        return;
+      }
       void this.onEnded();
       return;
     }
+    if (r.status === 'playing' && r.position > 0 && this.playingSince && Date.now() - this.playingSince > 30_000) this.resumeTries = 0;
     this.emitState(prevStatus !== r.status);
   }
 
@@ -250,7 +318,7 @@ export class PlayerController extends EventEmitter {
     if (t?.kind === 'youtube' && !this.queue.length && !(this.repeat === 'all' && this.cycle.length)) return;
     if (t?.mediaId) {
       const dur = this.report?.duration || t.duration || 0;
-      if (dur) this.d.library.saveProgress(t.mediaId, dur, dur);
+      if (dur) this.d.library.saveProgress(t.mediaId, dur, dur, true);
     }
     if (this.repeat === 'one' && this.request) {
       await this.play(this.request, { keepHistory: true });
@@ -270,7 +338,44 @@ export class PlayerController extends EventEmitter {
     if (next) return this.play(next.request);
     const ep = this.target?.mediaId ? this.d.library.nextEpisode(this.target.mediaId) : undefined;
     if (ep) return this.play({ source: 'local', mediaId: ep.id, startAt: 0 });
+    // an episode of a season torrent (still downloading, so not in the library yet): the next file of the torrent
+    const nextFile = this.nextTorrentEpisode();
+    if (nextFile) return this.play(nextFile);
     return { ok: false, error: 'queue_empty' };
+  }
+
+  private nextCache: { key: string; v: boolean } | null = null;
+
+  /** Is there something to go to with "next" (cheap: remembered per stream). */
+  private hasNext(): boolean {
+    if (this.queue.length || (this.repeat === 'all' && this.cycle.length)) return true;
+    const t = this.target;
+    if (!t || t.kind === 'youtube') return false;
+    if (this.nextCache?.key === t.key) return this.nextCache.v;
+    const v = !!(t.mediaId && this.d.library.nextEpisode(t.mediaId)) || !!this.nextTorrentEpisode();
+    this.nextCache = { key: t.key, v };
+    return v;
+  }
+
+  private nextTorrentEpisode(): PlayRequest | null {
+    const req = this.request;
+    if (req?.source !== 'torrent' || !req.torrentId) return null;
+    const id = req.torrentId.toLowerCase();
+    const files = this.d.torrents.playableFiles(id).filter((f) => mediaKindOfFile(f.name) === 'video');
+    const curIdx = req.fileIndex ?? this.d.torrents.mainFileIndex(id);
+    const cur = files.find((f) => f.index === curIdx);
+    if (!cur) return null;
+    const key = (name: string) => {
+      const p = parseMediaName(name);
+      return p.episode !== undefined ? (p.season ?? 1) * 10000 + p.episode : null;
+    };
+    const k = key(cur.name);
+    if (k === null) return null;
+    const next = files
+      .map((f) => ({ f, k: key(f.name) }))
+      .filter((x): x is { f: { index: number; name: string }; k: number } => x.k !== null && x.k > k)
+      .sort((a, b) => a.k - b.k)[0];
+    return next ? { source: 'torrent', torrentId: id, fileIndex: next.f.index } : null;
   }
 
   private async toQueue(list: PlayRequest[]): Promise<QueueItem[]> {
@@ -370,18 +475,22 @@ export class PlayerController extends EventEmitter {
         this.cmd({ type: 'pause' });
         return { ok: true };
       case 'SEEK':
+        this.lastJumpAt = Date.now();
         this.cmd({ type: 'seek', position: Math.max(0, cmd.position) });
         return { ok: true };
       case 'SEEK_RELATIVE': {
+        this.lastJumpAt = Date.now();
         const pos = (this.report?.position ?? 0) + cmd.delta;
         const dur = this.report?.duration || this.target?.duration || Infinity;
         this.cmd({ type: 'seek', position: Math.max(0, Math.min(dur - 1, pos)) });
         return { ok: true };
       }
       case 'SUBTITLES':
+        this.lastJumpAt = Date.now();
         this.cmd({ type: 'subtitles', id: cmd.id });
         return { ok: true };
       case 'AUDIO_TRACK':
+        this.lastJumpAt = Date.now();
         if (!this.target) return { ok: false };
         this.target.audioIndex = cmd.index;
         this.d.send('player:cmd', { type: 'audio', index: cmd.index } satisfies PlayerCommand);
@@ -413,7 +522,7 @@ export class PlayerController extends EventEmitter {
   stop(): void {
     const t = this.target;
     if (t?.mediaId && this.report && this.report.key === t.key && this.report.duration > 0) {
-      this.d.library.saveProgress(t.mediaId, this.report.position, this.report.duration);
+      this.d.library.saveProgress(t.mediaId, this.report.position, this.report.duration, true);
     }
     this.target = null;
     this.request = null;
@@ -427,6 +536,7 @@ export class PlayerController extends EventEmitter {
   private load(t: PlayTarget): void {
     this.target = t;
     this.report = null;
+    this.playingSince = 0;
     if (t.kind === 'youtube') this.d.youtube.play(t);
     else if (this.d.youtube.active) this.d.youtube.hide();
     this.d.send('player:load', t);
@@ -438,7 +548,7 @@ export class PlayerController extends EventEmitter {
     try {
       if (this.cast.active) this.d.send('cast:stop');
       // save progress of what was playing
-      if (this.target?.mediaId && this.report?.duration) this.d.library.saveProgress(this.target.mediaId, this.report.position, this.report.duration);
+      if (this.target?.mediaId && this.report?.duration) this.d.library.saveProgress(this.target.mediaId, this.report.position, this.report.duration, true);
       const t = await this.resolve(req);
       if (!t) return { ok: false, error: 'not_found' };
       if (!opts.keepHistory && this.request && this.request !== req) {
@@ -467,19 +577,30 @@ export class PlayerController extends EventEmitter {
   private async resolve(req: PlayRequest): Promise<PlayTarget | null> {
     const key = newKey();
     if (req.source === 'youtube') {
-      const videoId = extractYouTubeId(req.url || '');
-      if (!videoId) throw new Error('bad_youtube_link');
+      const list = extractYouTubeList(req.url || '') || undefined;
+      let videoId = extractYouTubeId(req.url || '');
+      let listTitle: string | null = null;
+      if (!videoId && list) {
+        // a playlist link without a video: its first video comes from YouTube's oEmbed thumbnail
+        const first = await youtubePlaylistFirst(list);
+        videoId = first?.videoId || null;
+        listTitle = first?.title || null;
+      }
+      if (!videoId) throw new Error(list ? 'youtube_playlist_unavailable' : 'bad_youtube_link');
       const t: PlayTarget = {
         key,
         kind: 'youtube',
         source: 'youtube',
         videoId,
-        title: req.title || 'YouTube',
+        list,
+        listIndex: list ? extractYouTubeIndex(req.url || '') : undefined,
+        title: req.title || listTitle || 'YouTube',
+        subtitle: list ? 'Плейлист' : undefined,
         poster: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        backdrop: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+        backdrop: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
         startAt: req.startAt ?? extractYouTubeStart(req.url || ''),
       };
-      if (!req.title)
+      if (!req.title && !listTitle)
         void youtubeTitle(req.url || '').then((title) => {
           if (title && this.target?.key === key) {
             this.target.title = title;
@@ -589,6 +710,11 @@ export class PlayerController extends EventEmitter {
     const info = await probe(input, isHttp ? 45000 : 20000);
     this.probeInfo = info;
     const decision = decidePlayback(info, filePath);
+    this.stalls = 0;
+    this.resumeTries = 0;
+    console.log(
+      `[player] ${path.basename(filePath)} · ${source}${source === 'torrent' ? ' (not fully downloaded)' : ''} · ${info?.container || '?'} ${info?.video[0]?.codec || '-'}/${info?.audio[0]?.codec || '-'} · ${decision.direct ? 'direct' : decision.copyVideo ? 'remux' : 'transcode'}${decision.reason ? ` (${decision.reason})` : ''}`,
+    );
     const vcodec = info?.video[0]?.codec;
     const audioTracks = (info?.audio || []).map((a, i) => ({ index: i, label: trackLabel(a, i) }));
     const audioIndex = 0;
@@ -602,7 +728,7 @@ export class PlayerController extends EventEmitter {
     }
     if (!isHttp) {
       for (const [i, ext] of findExternalSubtitles(input).entries()) {
-        subtitles.push({ id: `x${i}`, label: ext.label, url: this.d.server.subsUrl(input, { ext: ext.path }) });
+        subtitles.push({ id: `x${i}`, label: subtitleFileLabel(ext.label), url: this.d.server.subsUrl(input, { ext: ext.path }) });
       }
     }
 
@@ -626,23 +752,52 @@ export class PlayerController extends EventEmitter {
     };
   }
 
+  /**
+   * Another audio track: the stream is restarted with that track, in the same way the picture was
+   * playing so far. A video that had to be converted (HEVC the graphics card can't show, old codecs)
+   * stays converted — copying it again gave a black screen with sound.
+   */
   private async restartWithAudio(index: number, position: number): Promise<void> {
     const t = this.target;
     const info = this.probeInfo;
     if (!t || !info) return;
-    const src = new URL((t.transcode || t.fallback)?.base || '');
-    const input = src.searchParams.get('src');
+    const withAudio = (base: string) => {
+      const u = new URL(base);
+      u.searchParams.set('audio', String(index));
+      u.searchParams.delete('start');
+      return u.toString();
+    };
+    const current = t.transcode?.base;
+    const anyBase = current || t.fallback?.base;
+    const input = anyBase ? new URL(anyBase).searchParams.get('src') : null;
     if (!input) return;
-    const copy = info.video[0] && ['h264', 'hevc'].includes(info.video[0].codec);
+    const vcodec = info.video[0]?.codec;
+    const full = this.d.server.transcodeUrl(input, { copy: false, audio: index });
+    let base: string;
+    let fallback: string | undefined;
+    if (current) {
+      // keep the current way: copied video stays copied, converted stays converted (and light stays light)
+      base = withAudio(current);
+      fallback = /[?&]copy=1/.test(current) ? full : undefined;
+    } else {
+      // it played directly: the picture decodes fine, so it can be copied with the other audio
+      const copyable = !!vcodec && ['h264', 'hevc'].includes(vcodec);
+      base = copyable ? this.d.server.transcodeUrl(input, { copy: true, vcodec, audio: index }) : full;
+      fallback = copyable ? full : undefined;
+    }
+    console.log(`[player] audio track ${index + 1}: ${/[?&]copy=1/.test(base) ? 'video copied' : 'video converted'}${/light=1/.test(base) ? ' (light)' : ''}`);
     this.load({
       ...t,
       key: newKey(),
       url: undefined,
-      transcode: { base: this.d.server.transcodeUrl(input, { copy: !!copy, vcodec: info.video[0]?.codec, audio: index }) },
+      transcode: { base },
+      fallback: fallback ? { base: fallback } : undefined,
       startAt: position,
       audioIndex: index,
+      subtitleId: this.report?.subtitleId ?? null,
     });
   }
+
 
   /** Torrent finished buffering a file with play:true → start it. */
   async autoplayTorrent(torrentId: string, fileIndex: number): Promise<void> {
@@ -668,11 +823,30 @@ export function episodeLabel(m: MediaItem): string {
   return m.episodeTitle ? `${se} · ${m.episodeTitle}` : se;
 }
 
+/** First video and title of a YouTube playlist (oEmbed returns the first video's thumbnail). */
+async function youtubePlaylistFirst(list: string): Promise<{ videoId: string; title: string } | null> {
+  try {
+    // Chromium's network stack: goes through the system proxy like YouTube itself
+    const res = await net.fetch(
+      `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/playlist?list=${list}`)}`,
+      { signal: AbortSignal.timeout(8000) },
+    );
+    if (!res.ok) return null;
+    const j = (await res.json()) as { title?: string; thumbnail_url?: string };
+    const id = /\/vi\/([A-Za-z0-9_-]{11})\//.exec(j.thumbnail_url || '')?.[1];
+    return id ? { videoId: id, title: j.title || 'Плейлист' } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function youtubeTitle(url: string): Promise<string | null> {
   try {
     const id = extractYouTubeId(url);
     if (!id) return null;
-    const res = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}`);
+    const res = await net.fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}`, {
+      signal: AbortSignal.timeout(8000),
+    });
     if (!res.ok) return null;
     return ((await res.json()) as { title?: string }).title || null;
   } catch {

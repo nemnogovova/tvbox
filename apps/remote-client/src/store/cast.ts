@@ -38,7 +38,10 @@ export const startFileCast = (file: File) => {
   const cur = useCast.getState().session;
   // more photos go into the same image session
   if (cur?.kind === 'image' && cur.sendImage && file.type.startsWith('image/')) {
-    void cur.sendImage(file).then(() => useCast.setState({ session: cur }));
+    void cur
+      .sendImage(file)
+      .then(() => useCast.setState({ session: cur }))
+      .catch((e: unknown) => toast(`Фото не отправилось: ${e instanceof Error ? e.message : String(e)}`, 'error'));
     return Promise.resolve();
   }
   return run(() => castFile(file));

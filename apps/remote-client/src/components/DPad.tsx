@@ -1,63 +1,83 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, ExternalLink, Home, LogIn, MousePointer2, Search, ShieldCheck, Undo2, X, Youtube } from 'lucide-react';
 import { Events, type NavKey } from '@tvbox/shared';
 import { act, control, errorText, isOwner, request, toast, useStore, youtubeOpen } from '../store/store';
 import { Touchpad } from './Touchpad';
 import { cx } from './ui';
 import { openExternal } from '../lib/native';
+import { haptic } from '../lib/haptics';
 
-const buzz = () => {
-  try {
-    navigator.vibrate?.(10);
-  } catch {
-    // ignore
-  }
-};
-
+/** One D-pad / YouTube key to the TV (the press itself buzzes via the global haptics). */
 export const nav = (key: NavKey) => {
-  buzz();
   void control({ type: 'NAV', key });
 };
 
 /** Round D-pad with OK in the middle — like a TV remote. */
 export function DPad({ className }: { className?: string }) {
   const arrow = 'absolute flex items-center justify-center text-fg-muted transition active:scale-90 active:text-ember';
-  // hold an arrow to repeat (scrolling through long rows on YouTube)
-  const repeat = (key: NavKey) => {
-    let timer: ReturnType<typeof setInterval> | null = null;
-    let delay: ReturnType<typeof setTimeout> | null = null;
-    const stop = () => {
-      if (timer) clearInterval(timer);
-      if (delay) clearTimeout(delay);
-      timer = delay = null;
-    };
-    return {
-      onPointerDown: (e: React.PointerEvent) => {
-        e.preventDefault();
-        nav(key);
-        delay = setTimeout(() => (timer = setInterval(() => nav(key), 140)), 420);
-      },
-      onPointerUp: stop,
-      onPointerLeave: stop,
-      onPointerCancel: stop,
-    };
+  // hold an arrow to repeat (scrolling through long rows on YouTube).
+  // The timers live in a ref: the panel re-renders while a key is held (TV state updates),
+  // and a stop handler from a newer render must still be able to end the repeat.
+  const hold = useRef<{ timer: ReturnType<typeof setInterval> | null; delay: ReturnType<typeof setTimeout> | null }>({ timer: null, delay: null });
+  const stop = () => {
+    const h = hold.current;
+    if (h.timer) clearInterval(h.timer);
+    if (h.delay) clearTimeout(h.delay);
+    h.timer = h.delay = null;
   };
+  useEffect(() => {
+    // released anywhere (finger slid off, app went to background) or the D-pad disappeared
+    const end = () => stop();
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    window.addEventListener('blur', end);
+    document.addEventListener('visibilitychange', end);
+    return () => {
+      stop();
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      window.removeEventListener('blur', end);
+      document.removeEventListener('visibilitychange', end);
+    };
+  }, []);
+  const repeat = (key: NavKey) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      e.preventDefault();
+      stop();
+      // felt at the moment of the press, like a real remote key
+      haptic('click');
+      nav(key);
+      const h = hold.current;
+      h.delay = setTimeout(() => {
+        // every repeated step is felt, so you can count them without looking
+        h.timer = setInterval(() => {
+          haptic('detent');
+          nav(key);
+        }, 140);
+      }, 420);
+    },
+    onPointerUp: stop,
+    onPointerLeave: stop,
+    onPointerCancel: stop,
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  });
   return (
     <div className={cx('relative mx-auto aspect-square w-[min(66vw,240px)] select-none rounded-full bg-gradient-to-b from-ink-700 to-ink-800 shadow-card ring-1 ring-white/[0.06]', className)}>
-      <button aria-label="Вверх" className={cx(arrow, 'inset-x-[30%] top-0 h-[30%]')} {...repeat('up')}>
+      <button data-haptic="off" aria-label="Вверх" className={cx(arrow, 'inset-x-[30%] top-0 h-[30%]')} {...repeat('up')}>
         <ChevronUp size={30} />
       </button>
-      <button aria-label="Вниз" className={cx(arrow, 'inset-x-[30%] bottom-0 h-[30%]')} {...repeat('down')}>
+      <button data-haptic="off" aria-label="Вниз" className={cx(arrow, 'inset-x-[30%] bottom-0 h-[30%]')} {...repeat('down')}>
         <ChevronDown size={30} />
       </button>
-      <button aria-label="Влево" className={cx(arrow, 'inset-y-[30%] left-0 w-[30%]')} {...repeat('left')}>
+      <button data-haptic="off" aria-label="Влево" className={cx(arrow, 'inset-y-[30%] left-0 w-[30%]')} {...repeat('left')}>
         <ChevronLeft size={30} />
       </button>
-      <button aria-label="Вправо" className={cx(arrow, 'inset-y-[30%] right-0 w-[30%]')} {...repeat('right')}>
+      <button data-haptic="off" aria-label="Вправо" className={cx(arrow, 'inset-y-[30%] right-0 w-[30%]')} {...repeat('right')}>
         <ChevronRight size={30} />
       </button>
       <button
         aria-label="OK"
+        data-haptic="heavy"
         onClick={() => nav('enter')}
         className="absolute inset-[30%] flex items-center justify-center rounded-full bg-ink-600 text-sm font-extrabold tracking-wider text-fg shadow-lg ring-1 ring-white/10 transition active:scale-95 active:bg-ember active:text-ink-950"
       >

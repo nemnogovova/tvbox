@@ -22,7 +22,7 @@ const BASE = 'https://www.youtube.com/tv';
 /** Free the memory if YouTube was not used for this long */
 const KEEP_ALIVE_MS = 20 * 60 * 1000;
 
-const AD_HOSTS = [
+export const AD_HOSTS = [
   '*://*.doubleclick.net/*',
   '*://*.googlesyndication.com/*',
   '*://*.googleadservices.com/*',
@@ -68,6 +68,7 @@ const STATE_JS = `(() => {
     ad: !!(pl && /\\bad-showing\\b|\\bad-interrupting\\b/.test(pl.className)),
     vd,
     removed: (window.__tvboxAdblock && window.__tvboxAdblock.removed) || 0,
+    exit: window.__tvboxExit || 0,
   };
 })()`;
 
@@ -84,6 +85,8 @@ interface PageState {
   ad: boolean;
   vd: { id: string; title: string; author: string } | null;
   removed: number;
+  /** times YouTube asked to close itself (Back on its root screen) */
+  exit: number;
 }
 
 const KEYS: Record<string, string> = {
@@ -118,7 +121,26 @@ function dispatchKey(key: string, keyCode: number): void {
   }
 }
 
-const watchHash = (id: string, t?: number) => `#/watch?v=${encodeURIComponent(id)}${t && t > 1 ? `&t=${Math.floor(t)}s` : ''}`;
+/**
+ * Start YouTube TV again at its home screen. loadURL() of the same page with another "#…"
+ * is only a hash change (no reload), so the page is reloaded explicitly.
+ */
+function restart(wc: Electron.WebContents): void {
+  if (wc.isDestroyed()) return;
+  if (!wc.getURL().startsWith(BASE)) {
+    void wc.loadURL(BASE + '#/').catch(() => undefined);
+    return;
+  }
+  void wc
+    .executeJavaScript(`history.replaceState(null, '', '/tv#/')`)
+    .catch(() => undefined)
+    .finally(() => {
+      if (!wc.isDestroyed()) wc.reload();
+    });
+}
+
+const watchHash = (id: string, t?: number, list?: string, index?: number) =>
+  `#/watch?v=${encodeURIComponent(id)}${list ? `&list=${encodeURIComponent(list)}${index ? `&index=${index}` : ''}` : ''}${t && t > 1 ? `&t=${Math.floor(t)}s` : ''}`;
 
 export class YouTubeController extends EventEmitter {
   private view: WebContentsView | null = null;
@@ -141,6 +163,8 @@ export class YouTubeController extends EventEmitter {
   private picking = false;
   private loginRequested = false;
   private baseRemoved = 0;
+  private lastExit = 0;
+  private pickerSince = 0;
   private syntheticUntil = 0;
 
   constructor(
@@ -184,8 +208,27 @@ export class YouTubeController extends EventEmitter {
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     view.webContents.on('did-start-loading', () => {
       this.ready = false;
+      // the page's counters start from zero again
+      this.baseRemoved = 0;
+      this.lastExit = 0;
     });
     view.webContents.on('render-process-gone', () => this.destroyView());
+    // should the page still manage to close itself, don't keep talking to a dead view
+    view.webContents.once('destroyed', () => {
+      if (this.view !== view) return;
+      this.view = null;
+      this.attached = false;
+      this.ready = false;
+      this.page = null;
+      const win = this.getWindow();
+      try {
+        if (win && !win.isDestroyed() && win.contentView.children.includes(view)) win.contentView.removeChildView(view);
+      } catch {
+        // ignore
+      }
+      if (this.target) this.emit('exit');
+      else if (this.loginRequested) this.hide();
+    });
     view.webContents.on('before-input-event', (e, input) => {
       // a keyboard at the TV: Esc on the YouTube home screen closes YouTube
       // (keys we send ourselves from the remote also pass through here — those are not the TV keyboard)
@@ -269,9 +312,9 @@ export class YouTubeController extends EventEmitter {
     this.target = target;
     this.videoId = target.videoId || null;
     this.watchSeen = false;
-    if (target.videoId) this.go(watchHash(target.videoId, target.startAt), true);
-    else if (!wasActive && this.page && /^#\/watch/.test(this.page.hash)) this.go('#/', false);
-    if (this.ready) this.attach();
+    if (target.videoId) this.go(watchHash(target.videoId, target.startAt, target.list, target.listIndex), true);
+    else if (!wasActive && this.page && /^#\/watch/.test(this.page.hash)) this.loadHome();
+    if (this.ready && !this.page?.picker) this.attach();
     this.report(target.videoId ? 'loading' : 'paused', 0, 0);
     this.publish({ open: true, mode: target.videoId ? 'watch' : 'browse', videoId: target.videoId, title: target.videoId ? target.title : undefined });
     this.startPolling(500);
@@ -288,8 +331,33 @@ export class YouTubeController extends EventEmitter {
     this.go(`#/search?q=${encodeURIComponent(q)}`, false);
   }
 
+  /**
+   * YouTube's home screen. Changing the hash to "#/" is not enough: over a playing video
+   * YouTube TV keeps the player on screen and its focus breaks, so the app is reloaded at home.
+   */
   home(): void {
-    this.go('#/', false);
+    if (!this.view || this.view.webContents.isDestroyed()) return;
+    if (this.atHome() && !this.videoId && this.ready) return;
+    const hadVideo = !!this.videoId;
+    this.videoId = null;
+    this.watchSeen = false;
+    // TVBox's YouTube splash covers the restart; the view comes back once YouTube is at home
+    this.detach();
+    this.loadHome();
+    this.publish({ open: true, mode: 'browse', videoId: undefined, title: undefined });
+    if (hadVideo) this.emit('browse');
+    this.report('paused', 0, 0);
+    this.startPolling(500);
+  }
+
+  /** Reload YouTube TV at its home screen ("who's watching" / guest entry is handled as on first start). */
+  private loadHome(): void {
+    const wc = this.view?.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    this.ready = false;
+    this.pending = null;
+    this.page = null;
+    restart(wc);
   }
 
   /** Close YouTube (keeps the page in memory for a quick return). */
@@ -298,7 +366,7 @@ export class YouTubeController extends EventEmitter {
     if (wc && !wc.isDestroyed()) {
       void wc.executeJavaScript(`document.querySelectorAll('video').forEach(v => v.pause())`).catch(() => undefined);
       // leave the watch page, so the next open starts at the home screen
-      if (this.page && /^#\/watch/.test(this.page.hash)) void wc.executeJavaScript(`location.hash = '#/'`).catch(() => undefined);
+      if (this.page && (/^#\/watch/.test(this.page.hash) || this.page.video)) this.loadHome();
     }
     this.detach();
     this.target = null;
@@ -356,7 +424,7 @@ export class YouTubeController extends EventEmitter {
     // back to the welcome screen, where YouTube shows the activation code
     await this.ses().clearStorageData({ storages: ['localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] });
     this.ready = false;
-    void view.webContents.loadURL(BASE + '#/');
+    restart(view.webContents);
     this.publish({ open: true, mode: 'login', code: undefined });
     this.startPolling(500);
   }
@@ -367,7 +435,7 @@ export class YouTubeController extends EventEmitter {
     this.setSignedIn(false);
     if (this.view && !this.view.webContents.isDestroyed()) {
       this.ready = false;
-      void this.view.webContents.loadURL(BASE + '#/');
+      restart(this.view.webContents);
     }
   }
 
@@ -423,6 +491,13 @@ export class YouTubeController extends EventEmitter {
     void wc.executeJavaScript(`(${dispatchKey.toString()})(${JSON.stringify(k[0])}, ${k[1]})`, true).catch(() => undefined);
   }
 
+  /** The requested video again (with its playlist), after YouTube dropped the deep link. */
+  private reopenHash(): string {
+    const t = this.target;
+    const same = t?.videoId === this.videoId;
+    return watchHash(this.videoId || '', same ? t?.startAt : undefined, same ? t?.list : undefined, same ? t?.listIndex : undefined);
+  }
+
   private go(hash: string, guest: boolean): void {
     const wc = this.view?.webContents;
     if (!wc || wc.isDestroyed()) return;
@@ -473,7 +548,20 @@ export class YouTubeController extends EventEmitter {
     if (s.ready && !this.ready) {
       this.ready = true;
     }
-    if (this.ready && (this.target || this.loginRequested) && !this.attached) this.attach();
+
+    // Back on YouTube's root screen: YouTube wants to quit → close it in TVBox
+    if (s.exit > this.lastExit) {
+      this.lastExit = s.exit;
+      if (this.target) this.emit('exit');
+      else this.hide();
+      return;
+    }
+    // keep TVBox's splash up while YouTube asks "who's watching" — TVBox answers that itself;
+    // only linking an account needs that screen (and a stuck picker is shown after a while)
+    if (s.picker) this.pickerSince ||= Date.now();
+    else this.pickerSince = 0;
+    const showable = !s.picker || this.loginRequested || Date.now() - this.pickerSince > 8000;
+    if (this.ready && showable && (this.target || this.loginRequested) && !this.attached) this.attach();
 
     // signed in? (YouTube TV keeps its own tokens; the guide says "You're signed out" otherwise)
     if (s.ready && s.guide && !s.picker && !s.code) this.setSignedIn(!s.signedOut);
@@ -488,7 +576,7 @@ export class YouTubeController extends EventEmitter {
         // "who's watching?": the account tile comes first
         this.lastPickerKey = Date.now();
         this.sendKey('Enter');
-        if (this.videoId) this.pending = { hash: watchHash(this.videoId), guest: false };
+        if (this.videoId) this.pending = { hash: this.reopenHash(), guest: false };
       } else {
         // no account yet: go in as a guest (home, search and videos work; the remote offers to link the account)
         void this.pickGuest(s.welcome);
@@ -591,7 +679,7 @@ export class YouTubeController extends EventEmitter {
       if (found) {
         this.sendKey('Enter');
         // YouTube drops the deep link while asking: open the video again once it's past the picker
-        if (this.videoId) this.pending = { hash: watchHash(this.videoId), guest: true };
+        if (this.videoId) this.pending = { hash: this.reopenHash(), guest: true };
       }
     } finally {
       this.lastPickerKey = Date.now();

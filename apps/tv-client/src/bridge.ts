@@ -29,6 +29,9 @@ export interface PlayTarget {
   backdrop?: string;
   mediaId?: string;
   videoId?: string;
+  /** YouTube playlist the video is played from (the next ones follow on their own) */
+  list?: string;
+  listIndex?: number;
   /** Direct URL (native seeking) */
   url?: string;
   /** Transcoded stream (seeking restarts ffmpeg at an offset) */
@@ -38,6 +41,8 @@ export interface PlayTarget {
   duration?: number;
   startAt?: number;
   subtitles?: SubtitleTrack[];
+  /** subtitles to show from the start (kept when the stream restarts: other audio, lighter quality) */
+  subtitleId?: string | null;
   audioTracks?: { index: number; label: string }[];
   audioIndex?: number;
   /** Music track info */

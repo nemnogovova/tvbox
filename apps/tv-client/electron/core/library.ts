@@ -282,11 +282,30 @@ export class Library extends EventEmitter {
     this.changed();
   }
 
-  saveProgress(mediaId: string, position: number, duration: number): void {
+  /**
+   * Progress is saved every few seconds while watching; the whole catalog goes out to the remotes
+   * at most every 30 s for that (it used to be resent every 5 s — a lot of traffic for a phone),
+   * and at once when playback pauses or stops (`now`).
+   */
+  saveProgress(mediaId: string, position: number, duration: number, now = false): void {
     if (!this.db.getMedia(mediaId)) return;
     this.db.saveProgress(mediaId, position, duration);
-    this.changed();
+    const due = Date.now() - this.lastProgressPush >= 30_000;
+    if (now || due) {
+      clearTimeout(this.progressTimer);
+      this.progressTimer = undefined;
+      this.lastProgressPush = Date.now();
+      this.changed();
+    } else if (!this.progressTimer) {
+      this.progressTimer = setTimeout(() => {
+        this.progressTimer = undefined;
+        this.lastProgressPush = Date.now();
+        this.changed();
+      }, 30_000 - (Date.now() - this.lastProgressPush));
+    }
   }
+  private lastProgressPush = 0;
+  private progressTimer: NodeJS.Timeout | undefined;
 
   getProgress(mediaId: string) {
     return this.db.getProgress(mediaId);

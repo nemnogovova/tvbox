@@ -3,16 +3,11 @@ import { createPortal } from 'react-dom';
 import { ArrowBigUp, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Delete, Keyboard, MousePointer2, Send, X } from 'lucide-react';
 import type { InputKey } from '@tvbox/shared';
 import { sendInput } from '../store/store';
+import { useBack } from '../lib/back';
 import { getPref, setPref } from '../lib/config';
 import { cx } from './ui';
+import { haptic } from '../lib/haptics';
 
-const buzz = (ms = 12) => {
-  try {
-    navigator.vibrate?.(ms);
-  } catch {
-    // no vibration API
-  }
-};
 
 interface Pt {
   x: number;
@@ -69,7 +64,7 @@ export function Touchpad({ open, onClose }: { open: boolean; onClose: () => void
           if (st.touches.size === 1 && st.moved < 8) {
             st.drag = true;
             setDragging(true);
-            buzz(25);
+            haptic('heavy');
             sendInput({ t: 'down', b: 'left' });
           }
         }, 420);
@@ -135,10 +130,10 @@ export function Touchpad({ open, onClose }: { open: boolean; onClose: () => void
       if (dur < 260 && st.moved < 10) {
         if (st.maxFingers >= 2) {
           sendInput({ t: 'click', b: 'right' });
-          buzz(18);
+          haptic('click');
         } else {
           sendInput({ t: 'click', b: 'left' });
-          buzz();
+          haptic('tick');
         }
       }
     };
@@ -199,16 +194,11 @@ export function Touchpad({ open, onClose }: { open: boolean; onClose: () => void
     };
   }, [open, speed]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !keyboard && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose, keyboard]);
+  // back: the keyboard panel first, then the touchpad itself
+  useBack(open, () => (keyboard ? setKeyboard(false) : onClose()));
 
   if (!open) return null;
   const key = (k: InputKey, mods?: ('ctrl' | 'alt' | 'shift' | 'win')[]) => {
-    buzz();
     sendInput({ t: 'key', key: k, mods });
   };
 
@@ -258,10 +248,10 @@ export function Touchpad({ open, onClose }: { open: boolean; onClose: () => void
       </div>
 
       <div className="grid grid-cols-2 gap-2 px-3 pt-2">
-        <button className="btn-soft h-12" onClick={() => (buzz(), sendInput({ t: 'click', b: 'left' }))}>
+        <button className="btn-soft h-12" onClick={() => sendInput({ t: 'click', b: 'left' })}>
           Левая кнопка
         </button>
-        <button className="btn-soft h-12" onClick={() => (buzz(), sendInput({ t: 'click', b: 'right' }))}>
+        <button className="btn-soft h-12" onClick={() => sendInput({ t: 'click', b: 'right' })}>
           Правая кнопка
         </button>
       </div>

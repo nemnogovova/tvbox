@@ -13,6 +13,22 @@
   if (w.__tvboxAdblock) return;
   const st = (w.__tvboxAdblock = { removed: 0 });
 
+  // "Back" on YouTube's own root screen makes the app call window.close(), which in Electron
+  // destroys the whole view behind TVBox's back. Count it instead: TVBox closes YouTube itself.
+  const ex = window as unknown as { __tvboxExit?: number };
+  ex.__tvboxExit = 0;
+  try {
+    Object.defineProperty(window, 'close', {
+      value: () => {
+        ex.__tvboxExit = (ex.__tvboxExit || 0) + 1;
+      },
+      writable: false,
+      configurable: false,
+    });
+  } catch {
+    // ignore
+  }
+
   const AD_KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams', 'adBreakParams'];
   const AD_RENDERERS =
     /^(adSlotRenderer|promotedSparklesWebRenderer|promotedVideoRenderer|tvMastheadRenderer|bannerPromoRenderer|statementBannerRenderer|compactPromotedItemRenderer|adBreakServiceRenderer|inFeedAdLayoutRenderer|displayAdRenderer|searchPyvRenderer|movieOfferModuleRenderer|primetimePromoRenderer|brandVideoShelfRenderer|brandVideoSingletonRenderer|mealbarPromoRenderer|actionCompanionAdRenderer|instreamVideoAdRenderer|linearAdSequenceRenderer|adActionInterstitialRenderer)$/;

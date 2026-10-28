@@ -1,7 +1,9 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle2, AlertTriangle, Info, X, XCircle, Loader2 } from 'lucide-react';
 import { useStore } from '../store/store';
+import { useBack } from '../lib/back';
+import { haptic } from '../lib/haptics';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
@@ -49,12 +51,8 @@ export function Sheet({
   children: ReactNode;
   wide?: boolean;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  // Esc / Android back / browser back close the topmost sheet only
+  useBack(open, onClose);
   if (!open) return null;
   return createPortal(
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6" onMouseDown={onClose}>
@@ -126,9 +124,18 @@ export function Range({
   ariaLabel?: string;
 }) {
   const pct = max > min ? ((Math.min(max, Math.max(min, value)) - min) / (max - min)) * 100 : 0;
+  // dragging is felt: a light detent every 10 %, a firm one at both ends
+  const lastStep = useRef<number | null>(null);
+  const feel = (v: number) => {
+    const f = max > min ? (v - min) / (max - min) : 0;
+    const stepNo = Math.round(f * 10);
+    if (lastStep.current !== null && stepNo !== lastStep.current) haptic(stepNo === 0 || stepNo === 10 ? 'heavy' : 'detent');
+    lastStep.current = stepNo;
+  };
   return (
     <input
       type="range"
+      data-haptic="off"
       className="range"
       aria-label={ariaLabel}
       min={min}
@@ -137,7 +144,11 @@ export function Range({
       value={value}
       disabled={disabled}
       style={{ ['--pct' as string]: `${pct}%` }}
-      onChange={(e) => onInput?.(Number(e.target.value))}
+      onChange={(e) => {
+        feel(Number(e.target.value));
+        onInput?.(Number(e.target.value));
+      }}
+      onPointerDown={() => (lastStep.current = null)}
       onPointerUp={(e) => onCommit?.(Number((e.target as HTMLInputElement).value))}
       onKeyUp={(e) => onCommit?.(Number((e.target as HTMLInputElement).value))}
     />

@@ -86,11 +86,23 @@ export class Uploads {
     if (full) fs.rmSync(full, { force: true });
   }
 
-  /** Remove uploaded files that are no longer referenced by the screensaver settings. */
+  /**
+   * Remove uploaded files that the idle-screen settings no longer use. Fresh uploads are kept
+   * for a while: they belong to a change that is still being edited on a remote (not applied yet).
+   */
   prune(keep: string[]): void {
     const set = new Set(keep.map((n) => path.basename(n)));
+    const fresh = Date.now() - 6 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(this.dir)) {
-      if (!f.endsWith('.part') && !set.has(f)) fs.rmSync(path.join(this.dir, f), { force: true });
+      if (f.endsWith('.part') || set.has(f)) continue;
+      const full = path.join(this.dir, f);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile() || st.mtimeMs > fresh) continue;
+      } catch {
+        continue;
+      }
+      fs.rmSync(full, { force: true });
     }
   }
 

@@ -37,6 +37,7 @@ import {
   type IndexerStatus,
 } from '@tvbox/shared';
 import { act, control, errorText, isOwner, request, toast, useStore } from '../store/store';
+import { useBack } from '../lib/back';
 import { Empty, Segmented, Spinner, cx } from '../components/ui';
 import { openExternal } from '../lib/native';
 
@@ -70,6 +71,8 @@ export function CatalogPage({ onWatch, onOpenSettings }: { onWatch?: () => void;
   const open = (it: Pick<CatalogItem, 'id' | 'type'>) => setStack((s) => [...s, { id: it.id, type: it.type }]);
   const closeTop = () => setStack((s) => s.slice(0, -1));
   const searching = query.trim().length >= 2;
+  useBack(!!browse, () => setBrowse(null));
+  useBack(!!query, () => setQuery(''));
 
   let body: ReactNode;
   if (error && !home)
@@ -516,12 +519,7 @@ function DetailsView({
     };
   }, [open.id, open.type]);
 
-  useEffect(() => {
-    if (!top) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && (releases ? setReleases(false) : onClose());
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [top, releases, onClose]);
+  useBack(top, () => (releases ? setReleases(false) : onClose()));
 
   // library items of this title (to play right away)
   const inLibrary = useMemo(() => {

@@ -135,7 +135,15 @@ export interface UploadBeginPayload {
   name: string;
   size: number;
   type: string;
-  purpose: 'screensaver';
+  /** screensaver pictures / videos, or the home screen background */
+  purpose: 'screensaver' | 'wallpaper';
+}
+
+export interface UploadEndResult {
+  src: string;
+  name: string;
+  /** small JPEG preview (data: URL) for the remote */
+  thumb?: string;
 }
 
 export interface UploadChunkPayload {

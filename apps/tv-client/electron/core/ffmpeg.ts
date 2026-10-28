@@ -151,6 +151,8 @@ export interface TranscodeOptions {
   audioIndex?: number;
   copyVideo: boolean;
   videoCodec?: string;
+  /** the TV could not keep up: fastest encoding, at most 720p */
+  light?: boolean;
 }
 
 export function transcodeArgs(o: TranscodeOptions): string[] {
@@ -164,12 +166,23 @@ export function transcodeArgs(o: TranscodeOptions): string[] {
     if (o.copyVideo) args.push('-noaccurate_seek');
     args.push('-ss', o.start.toFixed(3));
   }
+  // Full video conversion (HEVC 10-bit, old codecs) has to run faster than real time or the
+  // picture stalls every few seconds: decode on the graphics card when there is one (falls back
+  // to the CPU by itself), and encode with a fast preset.
+  if (!o.copyVideo) args.push('-hwaccel', 'auto');
   args.push('-i', o.input, '-map', '0:v:0?', '-map', `0:a:${o.audioIndex ?? 0}?`);
   if (o.copyVideo) {
     args.push('-c:v', 'copy');
     if (o.videoCodec === 'hevc') args.push('-tag:v', 'hvc1');
   } else {
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p', '-vf', "scale='min(1920,iw)':-2");
+    const w = o.light ? 1280 : 1920;
+    args.push(
+      '-c:v', 'libx264', '-preset', o.light ? 'ultrafast' : 'superfast', '-crf', o.light ? '23' : '22',
+      // a keyframe every 2 s: the stream is sent in 2-second pieces (x264's default of one per
+      // ~10 s made the player wait for a whole 10-second piece — slow start, stop-and-go playback)
+      '-force_key_frames', 'expr:gte(t,n_forced*2)',
+      '-pix_fmt', 'yuv420p', '-vf', `scale='min(${w},iw)':-2`,
+    );
   }
   args.push(
     // Keep audio locked to the video clock: fill gaps / drop overlaps in the audio track
