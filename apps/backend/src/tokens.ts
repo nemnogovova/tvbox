@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
  */
 export type TokenClaims =
   | { k: 'user'; sub: string; email: string; name: string; picture?: string; iat: number }
-  | { k: 'tv'; v: number; name: string; iat: number };
+  | { k: 'tv'; /** home (absent in tokens issued before homes existed) */ h?: string; v: number; name: string; iat: number };
 
 const b64 = (buf: Buffer | string) => Buffer.from(buf).toString('base64url');
 

@@ -105,7 +105,7 @@ export class Connection extends EventEmitter {
         this.config.update({ token: '' });
         setTimeout(() => this.socket?.connect(), 500);
       } else if (p?.reason === 'replaced') {
-        this.setState('replaced', 'К серверу подключился другой телевизор');
+        this.setState('replaced', 'Владелец подключил к этому дому другой телевизор');
         this.retryTimer = setTimeout(() => {
           this.state = 'connecting';
           this.socket?.connect();

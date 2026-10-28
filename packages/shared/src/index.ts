@@ -13,6 +13,7 @@ export const APP_NAME = 'TVBox';
  * a remote newer than the server shows "update the server" instead of silently failing.
  *   1 – TVBox 3.0
  *   2 – catalog, app launcher, touchpad, YouTube TV
+ *   3 – homes: several isolated TVs with their own people on one server
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const DEFAULT_SERVER_URL = 'https://tv.nemnogovova.com';

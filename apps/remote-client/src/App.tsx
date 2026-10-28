@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store/store';
 import { AuthScreen, Backdrop } from './components/AuthScreen';
 import { LinkPage } from './components/LinkPage';
+import { JoinPage, NoHomeScreen } from './components/Homes';
 import { MORE_TABS, Shell, useIsDesktop, type Tab } from './components/Shell';
 import { RemotePanel } from './components/RemotePanel';
 import { GlobalInputs } from './components/GlobalInputs';
@@ -30,9 +31,12 @@ export default function App() {
   const auth = useStore((s) => s.auth);
   const path = usePath();
   const linkMatch = /^\/link\/?([A-Za-z0-9-]*)/.exec(path);
+  const joinMatch = /^\/join\/?([A-Za-z0-9-]*)/.exec(path);
+  const user = useStore((s) => s.user);
 
   let body;
   if (linkMatch) body = <LinkPage initialCode={linkMatch[1] || ''} />;
+  else if (joinMatch) body = <JoinPage initialCode={joinMatch[1] || ''} />;
   else if (auth === 'unknown')
     body = (
       <div className="relative flex h-full items-center justify-center">
@@ -41,7 +45,11 @@ export default function App() {
       </div>
     );
   else if (auth === 'anon') body = <AuthScreen />;
-  else body = <Main />;
+  // signed in, but no TV yet: connect one or join a home by invitation
+  // (a server older than homes sends no homeId at all — then there is just its one TV)
+  else if (user?.homeId === null) body = <NoHomeScreen />;
+  // another home is a different TV: everything starts fresh
+  else body = <Main key={user?.homeId || 'tv'} />;
 
   return (
     <>

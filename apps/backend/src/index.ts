@@ -22,10 +22,10 @@ export function createServer(
   opts: { verifyGoogle?: GoogleVerifier; tvTimeoutMs?: number } = {},
 ): TvboxServer {
   const config = loadConfig(env);
-  const store = new JsonStore(config.dataDir);
+  const store = new JsonStore(config.dataDir, { ownerEmail: config.ownerEmail, ownerUsername: config.ownerUsername });
   const auth = new AuthService(config, store, opts.verifyGoogle ?? createGoogleVerifier(config.googleClientId));
   let hub: Hub | null = null;
-  const app = createApp(config, auth, () => hub);
+  const app = createApp(config, auth, store, () => hub);
   const httpServer = http.createServer(app);
   hub = createHub(httpServer, { config, store, auth, tvTimeoutMs: opts.tvTimeoutMs });
   const io = hub.io;
@@ -61,7 +61,7 @@ if (require.main === module) {
     .then((port) => {
       const c = server.config;
       console.log(`[tvbox] listening on :${port} (${c.publicUrl})`);
-      console.log(`[tvbox] owner=${c.ownerEmail || c.ownerUsername || '(first account)'} google=${c.googleClientId ? 'on' : 'OFF'} turn=${c.turnSecret ? 'on' : 'off'}`);
+      console.log(`[tvbox] admin=${c.ownerEmail || c.ownerUsername || '(first account)'} homes=${server.store.homes.length} registration=${server.store.registration} google=${c.googleClientId ? 'on' : 'OFF'} turn=${c.turnSecret ? 'on' : 'off'}`);
     })
     .catch((err) => {
       console.error('[tvbox] failed to start', err);

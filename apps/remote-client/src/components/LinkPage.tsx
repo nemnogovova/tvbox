@@ -19,6 +19,10 @@ export function LinkPage({ initialCode }: { initialCode: string }) {
   const [info, setInfo] = useState<LinkInfoResult | null>(null);
   const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const owned = (user?.homes || []).filter((h) => h.role === 'owner');
+  // a TV goes into one of the user's own homes (the current one by default) or a new one
+  const [picked, setHomeChoice] = useState<string | null>(null);
+  const homeChoice = picked ?? (owned.some((h) => h.id === user?.homeId) ? user!.homeId! : owned[0]?.id || 'new');
 
   useEffect(() => {
     if (auth !== 'authed' || conn !== 'online' || !code) return;
@@ -37,7 +41,7 @@ export function LinkPage({ initialCode }: { initialCode: string }) {
 
   const approve = async () => {
     setState('busy');
-    const r = await request(Events.LINK_APPROVE, { code });
+    const r = await request(Events.LINK_APPROVE, info?.kind === 'tv' ? { code, homeId: homeChoice } : { code });
     if (r.ok) setState('done');
     else {
       setState('error');
@@ -103,8 +107,29 @@ export function LinkPage({ initialCode }: { initialCode: string }) {
             </div>
             <h1 className="mt-5 text-xl font-extrabold">{isTv ? 'Подключить телевизор?' : 'Войти на устройстве?'}</h1>
             <p className="mt-2 text-sm leading-relaxed text-fg-muted">
-              «{info.name}» {isTv ? 'станет вашим ТВ-клиентом.' : `получит доступ к пульту от имени ${user?.email}.`}
+              {isTv ? (
+                owned.length ? (
+                  <>«{info.name}» будет телевизором дома:</>
+                ) : (
+                  <>Для «{info.name}» будет создан ваш дом. Других людей вы сможете пригласить в настройках.</>
+                )
+              ) : (
+                `«${info.name}» получит доступ к пульту от имени ${user?.name}.`
+              )}
             </p>
+            {isTv && owned.length > 0 && (
+              <select className="field mt-3 text-sm font-semibold" value={homeChoice} onChange={(e) => setHomeChoice(e.target.value)} data-testid="link-home">
+                {owned.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+                <option value="new">Новый дом</option>
+              </select>
+            )}
+            {isTv && owned.length > 0 && homeChoice !== 'new' && (
+              <p className="mt-2 text-xs text-fg-dim">Если у этого дома уже есть телевизор, его место займёт новый.</p>
+            )}
             <div className="mt-4 font-mono text-sm tracking-[0.25em] text-fg-dim">{code}</div>
             {error && <p className="mt-3 text-sm text-bad">{error}</p>}
             <div className="mt-6 flex gap-2">

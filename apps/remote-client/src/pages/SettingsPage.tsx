@@ -25,7 +25,8 @@ import { Section, Spinner, Toggle, cx } from '../components/ui';
 import { navigate } from '../components/LinkPage';
 import { hostOf } from '../components/AuthScreen';
 import { IdleEditor } from '../components/IdleEditor';
-import { AccessCard, AccountCard, AppsCard, TvExtrasCard } from '../components/AccountSettings';
+import { AccountCard, AppsCard, TvExtrasCard } from '../components/AccountSettings';
+import { HomeCard, ServerCard } from '../components/Homes';
 import { getPref, setPref } from '../lib/config';
 import { isNative, openExternal, setVolumeKeysEnabled, startBackgroundControl, stopBackgroundControl } from '../lib/native';
 import { hapticsAvailable, hapticsEnabled, setHapticsEnabled } from '../lib/haptics';
@@ -38,10 +39,11 @@ export function SettingsPage({ onOpenMusic }: { onOpenMusic?: () => void }) {
     <div className="flex flex-col gap-4">
       <h1 className="h-page">Настройки</h1>
       <AccountCard onOpenMusic={onOpenMusic} />
+      <HomeCard />
       <TvCard />
       {owner && <TvExtrasCard />}
       <LinkDeviceCard />
-      {owner && <AccessCard />}
+      <ServerCard />
       {owner && <TvSettingsCard />}
       {owner && <IndexerCard />}
       {owner && <IdleEditor />}
@@ -84,7 +86,7 @@ function TvCard() {
       </div>
       {!presence.tvName && owner && (
         <p className="mt-3 text-sm leading-relaxed text-fg-dim">
-          Запустите TVBox на компьютере у телевизора и отсканируйте QR-код с экрана этим телефоном — или введите код ниже.
+          Запустите TVBox на компьютере у телевизора и отсканируйте QR-код с экрана этим телефоном — или введите код ниже. Телевизор подключится к этому дому.
         </p>
       )}
       {owner && (

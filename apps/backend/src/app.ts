@@ -2,10 +2,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import express, { type Express, type Request, type Response } from 'express';
-import { Events, PROTOCOL_VERSION, type ControlCommand, type ReleaseInfo, type ReleasePlatform, type ReleasesManifest, type User } from '@tvbox/shared';
+import { Events, PROTOCOL_VERSION, type ControlCommand, type ReleaseInfo, type ReleasePlatform, type ReleasesManifest, type User, type InviteInfo } from '@tvbox/shared';
 import type { BackendConfig } from './config';
 import type { AuthService } from './auth';
 import type { Hub } from './hub';
+import type { JsonStore } from './store';
 import { turnCredentials } from './tokens';
 
 export interface IceServer {
@@ -50,7 +51,7 @@ function limiter(max: number, windowMs: number) {
 
 const PLATFORMS: ReleasePlatform[] = ['windows', 'android'];
 
-export function createApp(config: BackendConfig, auth: AuthService, getHub: () => Hub | null): Express {
+export function createApp(config: BackendConfig, auth: AuthService, store: JsonStore, getHub: () => Hub | null): Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', true);
@@ -73,6 +74,8 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
   const json = express.json({ limit: '64kb' });
   const authLimit = limiter(12, 5 * 60 * 1000);
 
+  const inviteOf = (req: Request): string | undefined => (typeof req.body?.invite === 'string' ? req.body.invite : undefined);
+
   const requireUser = (req: Request, res: Response): User | null => {
     const out = auth.verifySession(bearer(req));
     if (!out.ok || out.isTv) {
@@ -92,6 +95,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
       googleClientId: config.googleClientId,
       oauthConfigured: Boolean(config.googleClientId),
       passwordAuth: true,
+      registration: store.registration,
       publicUrl: config.publicUrl,
       turn: Boolean(config.turnSecret && config.turnHost),
       protocol: PROTOCOL_VERSION,
@@ -102,7 +106,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
   app.post('/api/auth/google', json, async (req, res) => {
     const credential = String(req.body?.credential || '');
     if (!credential) return res.status(400).json({ ok: false, error: 'missing_credential' });
-    const out = await auth.signInWithGoogle(credential);
+    const out = await auth.signInWithGoogle(credential, inviteOf(req));
     // a new account may be waiting for approval: owners see the request right away
     getHub()?.broadcastAdmin();
     if (!out.ok) return res.status(out.error === 'invalid_google_token' ? 401 : 403).json(out);
@@ -111,7 +115,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
 
   app.post('/api/auth/register', json, (req, res) => {
     if (!authLimit(`r:${req.ip}`)) return res.status(429).json({ ok: false, error: 'too_many_attempts' });
-    const out = auth.register(String(req.body?.username || ''), String(req.body?.password || ''), req.body?.name ? String(req.body.name) : undefined);
+    const out = auth.register(String(req.body?.username || ''), String(req.body?.password || ''), req.body?.name ? String(req.body.name) : undefined, inviteOf(req));
     if (out.ok || out.pending) getHub()?.broadcastAdmin();
     if (!out.ok) return res.status(out.error === 'pending_approval' ? 202 : 400).json(out);
     return res.json({ ok: true, token: out.token, user: out.user });
@@ -119,9 +123,19 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
 
   app.post('/api/auth/login', json, (req, res) => {
     if (!authLimit(`l:${req.ip}`)) return res.status(429).json({ ok: false, error: 'too_many_attempts' });
-    const out = auth.login(String(req.body?.username || ''), String(req.body?.password || ''));
+    const out = auth.login(String(req.body?.username || ''), String(req.body?.password || ''), inviteOf(req));
     if (!out.ok) return res.status(out.error === 'pending_approval' ? 403 : 401).json(out);
     return res.json({ ok: true, token: out.token, user: out.user });
+  });
+
+  /** What an invitation link leads to (shown before signing in). */
+  app.get('/api/invite/:code', (req, res) => {
+    if (!authLimit(`i:${req.ip}`)) return res.status(429).json({ ok: false, error: 'too_many_attempts' });
+    const home = store.findHomeByInvite(req.params.code);
+    if (!home) return res.status(404).json({ ok: false, error: 'invite_invalid' });
+    const owner = home.members.find((m) => m.role === 'owner');
+    const data: InviteInfo = { homeName: home.name, ownerName: (owner && store.getAccount(owner.accountId)?.name) || '' };
+    res.json({ ok: true, data });
   });
 
   app.get('/api/auth/me', (req, res) => {
@@ -164,7 +178,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
     const user = requireUser(req, res);
     if (!user) return;
     const hub = getHub();
-    res.json({ ok: true, data: hub?.player(), presence: hub?.presence() });
+    res.json({ ok: true, data: hub?.player(user.homeId), presence: hub?.presence(user.homeId) });
   });
 
   app.post('/api/control', json, async (req, res) => {
@@ -203,7 +217,7 @@ export function createApp(config: BackendConfig, auth: AuthService, getHub: () =
     if (!PLATFORMS.includes(platform)) return res.status(400).json({ ok: false, error: 'bad_platform' });
     const token = bearer(req);
     const owner = auth.verifySession(token);
-    const allowed = (config.releaseToken && token === config.releaseToken) || (owner.ok && owner.user.role === 'owner');
+    const allowed = (config.releaseToken && token === config.releaseToken) || (owner.ok && !!owner.user.admin);
     if (!allowed) return res.status(401).json({ ok: false, error: 'unauthorized' });
     const version = String(req.query.version || '').trim();
     const file = path.basename(String(req.query.file || '')).replace(/[^\w.\-]+/g, '_');

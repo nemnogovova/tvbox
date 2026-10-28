@@ -39,10 +39,10 @@ export function Pairing({ status }: { status: TvStatus }) {
               <Step n={1} /> Наведите камеру телефона на QR-код
             </li>
             <li className="flex gap-5">
-              <Step n={2} /> Войдите аккаунтом Google владельца
+              <Step n={2} /> Войдите в свой аккаунт TVBox
             </li>
             <li className="flex gap-5">
-              <Step n={3} /> Нажмите «Подключить» — готово
+              <Step n={3} /> Нажмите «Подключить» — телевизор станет вашим
             </li>
           </ol>
           <div className="mt-[5vh] flex items-center gap-3 text-[1.2rem] text-fg-dim">

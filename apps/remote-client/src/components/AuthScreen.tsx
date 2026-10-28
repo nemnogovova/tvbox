@@ -53,7 +53,7 @@ export function AuthScreen({ heading, sub }: { heading?: ReactNode; sub?: ReactN
                   <span className="h-px flex-1 bg-white/10" /> или <span className="h-px flex-1 bg-white/10" />
                 </div>
               )}
-              <PasswordAuth />
+              <PasswordAuth registration={cfg.registration} />
             </div>
           )}
         </div>
@@ -66,7 +66,7 @@ export function AuthScreen({ heading, sub }: { heading?: ReactNode; sub?: ReactN
                 kicked
               ) : authError === 'not_allowed' ? (
                 <>
-                  Аккаунт <b>{deniedEmail || 'этот'}</b> не в списке гостей. Попросите владельца добавить его — или зарегистрируйтесь по логину и паролю.
+                  Регистрация на сервере закрыта, а для <b>{deniedEmail || 'этого аккаунта'}</b> нет приглашения. Попросите владельца телевизора прислать ссылку-приглашение.
                 </>
               ) : authError === 'network' ? (
                 'Нет связи с сервером'
@@ -79,7 +79,7 @@ export function AuthScreen({ heading, sub }: { heading?: ReactNode; sub?: ReactN
         {authError === 'pending_approval' && (
           <div className="mt-5 flex items-start gap-3 rounded-2xl border border-warn/25 bg-warn/10 px-4 py-3 text-left text-sm">
             <Clock size={18} className="mt-0.5 shrink-0 text-warn" />
-            <span className="leading-snug text-fg">Заявка отправлена. Владелец TVBox должен одобрить её в настройках пульта — после этого войдите с тем же логином и паролем.</span>
+            <span className="leading-snug text-fg">Заявка отправлена. Администратор сервера одобрит её — после этого войдите с тем же логином или Google-аккаунтом. Есть ссылка-приглашение от владельца телевизора? Откройте её — тогда одобрение не нужно.</span>
           </div>
         )}
 
@@ -92,7 +92,7 @@ export function AuthScreen({ heading, sub }: { heading?: ReactNode; sub?: ReactN
 
 const PASSWORD_ERRORS = new Set(['invalid_credentials', 'username_taken', 'weak_password', 'bad_username', 'registration_closed', 'too_many_attempts']);
 
-function PasswordAuth() {
+function PasswordAuth({ registration }: { registration?: 'open' | 'approval' | 'closed' }) {
   const authError = useStore((s) => s.authError);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
@@ -141,7 +141,15 @@ function PasswordAuth() {
       <button className="btn-primary mt-1 w-full py-3.5" disabled={busy || username.trim().length < 3 || password.length < (mode === 'register' ? 4 : 1)}>
         {busy ? <Spinner /> : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
       </button>
-      {mode === 'register' && <p className="px-1 text-xs leading-relaxed text-fg-dim">Первый аккаунт на новом сервере становится владельцем. Остальных одобряет владелец.</p>}
+      {mode === 'register' && (
+        <p className="px-1 text-xs leading-relaxed text-fg-dim">
+          {registration === 'open'
+            ? 'После регистрации подключите свой телевизор — или войдите в дом по приглашению.'
+            : registration === 'closed'
+              ? 'Регистрация только по ссылке-приглашению от владельца телевизора.'
+              : 'Новый аккаунт одобряет администратор сервера. По ссылке-приглашению от владельца телевизора — сразу.'}
+        </p>
+      )}
     </form>
   );
 }

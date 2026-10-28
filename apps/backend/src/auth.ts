@@ -43,20 +43,63 @@ export class AuthService {
   ) {}
 
   // ------------------------------------------------------------------ helpers
+  /** The session's user: role in the current home, the list of homes, admin flag. */
   userFor(a: Account): User {
+    const active = this.store.activeHomeOf(a);
     return {
       id: a.id,
       email: a.google?.email || '',
       username: a.username,
       name: a.name,
       picture: a.google?.picture,
-      role: this.store.effectiveRole(a, this.config.ownerEmail) === 'owner' ? 'owner' : 'guest',
+      role: active?.role ?? 'guest',
+      homeId: active?.home.id ?? null,
+      homeName: active?.home.name,
+      homes: this.store.homesOf(a.id).map(({ home, role }) => ({ id: home.id, name: home.name, role })),
+      admin: this.store.isAdmin(a) || undefined,
     };
   }
 
-  private outcomeFor(a: Account, withToken: boolean): AuthOutcome {
-    const role = this.store.effectiveRole(a, this.config.ownerEmail);
-    if (role === 'pending') return { ok: false, error: 'pending_approval' };
+  /**
+   * An invitation (link code) lets its holder in: their account is approved and they
+   * join the home as a guest, which becomes their current home.
+   */
+  private applyInvite(a: Account, invite?: string): void {
+    if (!invite) return;
+    const home = this.store.findHomeByInvite(invite);
+    if (!home) return;
+    if (a.status === 'pending') this.store.updateAccount(a.id, { status: 'active' });
+    this.store.addMember(home.id, a.id, 'guest');
+    this.store.updateAccount(a.id, { activeHomeId: home.id });
+  }
+
+  /** Google e-mail invitations of homes: the invited person gets in at once. */
+  private applyEmailInvites(a: Account): void {
+    if (!a.google) return;
+    const homes = this.store.homesInvitingEmail(a.google.email);
+    if (!homes.length) return;
+    if (a.status === 'pending') this.store.updateAccount(a.id, { status: 'active' });
+    for (const h of homes) {
+      if (!this.store.memberRole(h, a.id)) {
+        this.store.addMember(h.id, a.id, 'guest');
+        if (!a.activeHomeId) this.store.updateAccount(a.id, { activeHomeId: h.id });
+      }
+    }
+  }
+
+  /** A single-TV installation migrated without its owner account: the admin takes it over. */
+  private adoptOrphanHome(a: Account): void {
+    const legacy = this.store.getHome(this.store.legacyHomeId);
+    if (legacy && this.store.isAdmin(a) && this.store.ownerCount(legacy) === 0) {
+      this.store.addMember(legacy.id, a.id, 'owner');
+      if (!a.activeHomeId) this.store.updateAccount(a.id, { activeHomeId: legacy.id });
+    }
+  }
+
+  private outcomeFor(a: Account, withToken: boolean, invite?: string): AuthOutcome {
+    this.applyInvite(a, invite);
+    this.adoptOrphanHome(a);
+    if (this.store.statusOf(a) === 'pending') return { ok: false, error: 'pending_approval' };
     this.store.touch(a.id);
     const user = this.userFor(a);
     return { ok: true, user, isTv: false, ...(withToken ? { token: this.issueUserToken(user) } : {}) };
@@ -66,8 +109,10 @@ export class AuthService {
     return signToken({ k: 'user', sub: user.id, name: user.name, email: '', iat: Date.now() }, this.config.sessionSecret);
   }
 
-  issueTvToken(name: string): string {
-    return signToken({ k: 'tv', v: this.store.tvTokenVersion, name, iat: Date.now() }, this.config.sessionSecret);
+  /** A TV token belongs to one home; unpairing the home invalidates it. */
+  issueTvToken(homeId: string, name: string): string {
+    const v = this.store.getHome(homeId)?.tvTokenVersion ?? 1;
+    return signToken({ k: 'tv', h: homeId, v, name, iat: Date.now() }, this.config.sessionSecret);
   }
 
   accountInfo(id: string): AccountInfo | null {
@@ -79,40 +124,44 @@ export class AuthService {
       username: a.username,
       hasPassword: Boolean(a.passwordHash),
       google: a.google ? { email: a.google.email, picture: a.google.picture } : undefined,
-      role: this.store.effectiveRole(a, this.config.ownerEmail),
+      role: this.store.statusOf(a) === 'pending' ? 'pending' : this.userFor(a).role === 'owner' ? 'owner' : 'guest',
       createdAt: a.createdAt,
     };
   }
 
   // ------------------------------------------------------------------ Google
   /** Find or create the account for a Google identity. */
-  private accountForGoogle(id: GoogleIdentity): Account | { error: string; email: string } {
+  private accountForGoogle(id: GoogleIdentity, invite?: string): Account | { error: string; email: string } {
     const email = normalizeEmail(id.email);
     let a = this.store.findByGoogle(id.sub, email);
     if (a) {
       if (!a.google || a.google.sub !== id.sub || a.google.picture !== id.picture) {
         this.store.updateAccount(a.id, { google: { sub: id.sub, email, picture: id.picture } });
       }
+      this.applyEmailInvites(a);
       return a;
     }
-    const isOwner = Boolean(this.config.ownerEmail) && email === this.config.ownerEmail;
-    const invited = this.store.isGuest(email);
-    if (!isOwner && !invited && !this.store.registrationOpen) return { error: 'not_allowed', email };
+    const isAdmin = Boolean(this.config.ownerEmail) && email === this.config.ownerEmail;
+    const invited = this.store.homesInvitingEmail(email).length > 0 || !!this.store.findHomeByInvite(invite || '');
+    const mode = this.store.registration;
+    if (!isAdmin && !invited && mode === 'closed') return { error: 'not_allowed', email };
     a = this.store.createAccount({
       name: id.name || email,
       google: { sub: id.sub, email, picture: id.picture },
-      role: isOwner ? 'owner' : invited ? 'guest' : 'pending',
+      status: isAdmin || invited || mode === 'open' ? 'active' : 'pending',
+      ...(isAdmin ? { admin: true } : {}),
     });
-    if (invited) this.store.setGuestName(email, id.name);
+    this.store.setInviteName(email, id.name);
+    this.applyEmailInvites(a);
     return a;
   }
 
-  async signInWithGoogle(idToken: string): Promise<AuthOutcome> {
+  async signInWithGoogle(idToken: string, invite?: string): Promise<AuthOutcome> {
     const id = await this.verifyGoogle(idToken);
     if (!id) return { ok: false, error: 'invalid_google_token' };
-    const a = this.accountForGoogle(id);
+    const a = this.accountForGoogle(id, invite);
     if ('error' in a) return { ok: false, error: a.error, email: a.email };
-    return this.outcomeFor(a, true);
+    return this.outcomeFor(a, true, invite);
   }
 
   async linkGoogle(accountId: string, idToken: string): Promise<{ ok: boolean; error?: string }> {
@@ -133,30 +182,33 @@ export class AuthService {
   }
 
   // ------------------------------------------------------------------ login / password
-  register(usernameRaw: string, password: string, name?: string): AuthOutcome & { pending?: boolean } {
+  register(usernameRaw: string, password: string, name?: string, invite?: string): AuthOutcome & { pending?: boolean } {
     const username = normalizeUsername(usernameRaw);
     if (!isValidUsername(username)) return { ok: false, error: 'bad_username' };
     if (!password || password.length < MIN_PASSWORD) return { ok: false, error: 'weak_password' };
     if (this.store.findByUsername(username)) return { ok: false, error: 'username_taken' };
-    const bootstrapOwner =
-      (this.config.ownerUsername && username === this.config.ownerUsername) ||
-      (!this.config.googleClientId && !this.store.hasOwnerAccount(this.config.ownerEmail));
-    if (!bootstrapOwner && !this.store.registrationOpen) return { ok: false, error: 'registration_closed' };
+    // the first account of a server without Google sign-in (or the login named in .env) runs the server
+    const bootstrapAdmin =
+      (this.config.ownerUsername && username === this.config.ownerUsername) || (!this.config.googleClientId && !this.store.hasAdmin());
+    const invited = !!this.store.findHomeByInvite(invite || '');
+    const mode = this.store.registration;
+    if (!bootstrapAdmin && !invited && mode === 'closed') return { ok: false, error: 'registration_closed' };
     const a = this.store.createAccount({
       name: (name || '').trim().slice(0, 60) || username,
       username,
       passwordHash: hashPassword(password),
-      role: bootstrapOwner ? 'owner' : 'pending',
+      status: bootstrapAdmin || invited || mode === 'open' ? 'active' : 'pending',
+      ...(bootstrapAdmin ? { admin: true } : {}),
     });
-    const out = this.outcomeFor(a, true);
+    const out = this.outcomeFor(a, true, invite);
     if (!out.ok && out.error === 'pending_approval') return { ...out, pending: true };
     return out;
   }
 
-  login(username: string, password: string): AuthOutcome {
+  login(username: string, password: string, invite?: string): AuthOutcome {
     const a = this.store.findByUsername(username);
     if (!a || !verifyPassword(password, a.passwordHash)) return { ok: false, error: 'invalid_credentials' };
-    return this.outcomeFor(a, true);
+    return this.outcomeFor(a, true, invite);
   }
 
   setPassword(accountId: string, usernameRaw: string | undefined, password: string, currentPassword?: string): { ok: boolean; error?: string } {
@@ -173,13 +225,21 @@ export class AuthService {
   }
 
   // ------------------------------------------------------------------ sessions
+  private tvUser(homeId: string, name: string): User {
+    const home = this.store.getHome(homeId);
+    return { id: `tv:${homeId}`, email: 'tv', name: name || home?.tvName || 'TV', role: 'device', homeId, homeName: home?.name };
+  }
+
   /** Validate a session token. Roles are re-evaluated every time (removal is instant). */
   verifySession(token: string): AuthOutcome {
     const claims: TokenClaims | null = verifyToken(token, this.config.sessionSecret);
     if (!claims) return { ok: false, error: 'invalid_token' };
     if (claims.k === 'tv') {
-      if (claims.v !== this.store.tvTokenVersion) return { ok: false, error: 'tv_unpaired' };
-      return { ok: true, isTv: true, user: { id: 'tv', email: 'tv', name: claims.name || 'TV', role: 'device' } };
+      // tokens issued before homes existed belong to the migrated home
+      const homeId = claims.h || this.store.legacyHomeId;
+      const home = this.store.getHome(homeId);
+      if (!home || claims.v !== home.tvTokenVersion) return { ok: false, error: 'tv_unpaired' };
+      return { ok: true, isTv: true, user: this.tvUser(home.id, claims.name) };
     }
     let a = this.store.getAccount(claims.sub);
     if (!a && claims.email) {
@@ -192,8 +252,18 @@ export class AuthService {
     return this.outcomeFor(a, false);
   }
 
+  /** The static DEVICE_TOKEN from .env (TVBox 1.x TVs) belongs to the migrated home. */
   verifyLegacyDeviceToken(token: string): AuthOutcome {
     if (!this.config.deviceToken || token !== this.config.deviceToken) return { ok: false, error: 'invalid_device_token' };
-    return { ok: true, isTv: true, user: { id: 'tv', email: 'tv', name: this.store.tvName || 'TV', role: 'device' } };
+    const homeId =
+      this.store.legacyHomeId ||
+      this.store.homes.find((h) =>
+        h.members.some((m) => {
+          const a = m.role === 'owner' ? this.store.getAccount(m.accountId) : undefined;
+          return !!a && this.store.isAdmin(a);
+        }),
+      )?.id;
+    if (!homeId) return { ok: false, error: 'tv_unpaired' };
+    return { ok: true, isTv: true, user: this.tvUser(homeId, '') };
   }
 }

@@ -95,7 +95,16 @@ export const Events = {
   TV_UNPAIR: 'tv:unpair', // owner -> server
   ACCOUNT_UPDATE: 'account:update', // owner -> server ({id, role})
   ACCOUNT_DELETE: 'account:delete', // owner -> server ({id})
-  REGISTRATION_SET: 'registration:set', // owner -> server ({open})
+  REGISTRATION_SET: 'registration:set', // server admin -> server ({mode} or legacy {open})
+
+  // ---- homes (one TV + its people; homes never see each other) ----
+  HOME_SWITCH: 'home:switch', // member -> server ({homeId})
+  HOME_JOIN: 'home:join', // user -> server ({code}) joins by an invitation
+  HOME_LEAVE: 'home:leave', // member -> server ({homeId?})
+  HOME_RENAME: 'home:rename', // owner -> server ({name})
+  HOME_INVITE_RESET: 'home:invite:reset', // owner -> server: new invitation code
+  HOME_DELETE: 'home:delete', // owner -> server: delete the home (the TV is unpaired)
+  MEMBER_REMOVE: 'member:remove', // owner -> server ({id})
 
   // ---- WebRTC signaling ----
   WEBRTC_OFFER: 'webrtc:offer',

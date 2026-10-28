@@ -10,21 +10,17 @@ import {
   Music2,
   Shield,
   Smartphone,
-  Trash2,
   Unlink,
-  UserCheck,
-  UserPlus,
-  UserX,
   Users,
   Youtube,
 } from 'lucide-react';
-import { Events, type AccountInfo, type AccountRole, type TvSettings } from '@tvbox/shared';
+import { Events, type AccountInfo, type TvSettings } from '@tvbox/shared';
 import { act, api, errorText, isOwner, request, signOut, toast, useStore } from '../store/store';
 import { fetchPublicConfig, type PublicConfig } from '../lib/config';
 import { googleSignOut, renderGoogleButton } from '../lib/google';
 import { isNative, openExternal } from '../lib/native';
 import { APP_VERSION, downloadUrl, formatSize, newerVersion, useReleases } from '../lib/releases';
-import { Section, Spinner, Toggle, cx } from './ui';
+import { Section, Spinner, cx } from './ui';
 
 // ---------------------------------------------------------------------------
 // Own account: profile, login/password, linked services
@@ -59,7 +55,11 @@ export function AccountCard({ onOpenMusic }: { onOpenMusic?: () => void }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-bold">{user.name}</span>
-            <RoleChip role={user.role} />
+            {user.admin && (
+              <span className="chip shrink-0 bg-ember/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-ember">
+                <Shield size={10} /> Админ сервера
+              </span>
+            )}
           </div>
           <div className="truncate text-sm text-fg-dim">{info?.username ? `@${info.username}` : user.email}</div>
         </div>
@@ -109,8 +109,8 @@ export function AccountCard({ onOpenMusic }: { onOpenMusic?: () => void }) {
           />
         )}
 
-        {/* music */}
-        <ServiceRow
+        {/* music (lives on the TV: only in a home) */}
+        {user.homeId !== null && <ServiceRow
           icon={<Music2 size={18} />}
           title="Музыкальные серверы"
           status={musicSources?.length ? musicSources.map((m) => m.name).join(', ') : 'не подключены'}
@@ -122,14 +122,14 @@ export function AccountCard({ onOpenMusic }: { onOpenMusic?: () => void }) {
               </button>
             )
           }
-        />
+        />}
         <ServiceRow icon={<SpotifyIcon />} title="Spotify" status="скоро" muted />
       </div>
     </Section>
   );
 }
 
-function RoleChip({ role }: { role: string }) {
+export function RoleChip({ role }: { role: string }) {
   return (
     <span
       className={cx(
@@ -264,148 +264,11 @@ function SpotifyIcon() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Owner: accounts, approvals, registration, Google invites, dictator mode
-// ---------------------------------------------------------------------------
-
-export function AccessCard() {
-  const admin = useStore((s) => s.admin);
-  const me = useStore((s) => s.user);
-  const [email, setEmail] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-
-  useEffect(() => {
-    void request(Events.ADMIN_GET).then((r) => r.ok && r.data && useStore.setState({ admin: r.data as never }));
-  }, []);
-
-  const accounts = admin?.accounts || [];
-  const pending = accounts.filter((a) => a.role === 'pending');
-  const others = accounts.filter((a) => a.role !== 'pending');
-
-  return (
-    <Section title="Доступ" icon={<Shield size={18} />}>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-4 rounded-2xl bg-ink-800 p-4">
-          <div className="min-w-0 flex-1">
-            <div className="font-bold">Регистрация открыта</div>
-            <div className="text-xs leading-relaxed text-fg-muted">Новые пользователи создают аккаунт по логину и паролю и ждут вашего одобрения</div>
-          </div>
-          <Toggle checked={!!admin?.registrationOpen} onChange={(v) => void act(Events.REGISTRATION_SET, { open: v })} />
-        </div>
-        <div className="flex items-center gap-4 rounded-2xl bg-ink-800 p-4">
-          <div className="min-w-0 flex-1">
-            <div className="font-bold">Режим диктатора</div>
-            <div className="text-xs leading-relaxed text-fg-muted">Гости могут смотреть медиатеку, но не управлять ТВ</div>
-          </div>
-          <Toggle checked={!!admin?.dictatorMode} onChange={(v) => void act(Events.DICTATOR_MODE, { enabled: v })} />
-        </div>
-      </div>
-
-      {pending.length > 0 && (
-        <div className="mt-5">
-          <div className="label mb-2 text-warn">Ждут одобрения · {pending.length}</div>
-          {pending.map((a) => (
-            <div key={a.id} className="flex items-center gap-3 rounded-2xl border border-warn/20 bg-warn/5 px-3 py-2.5">
-              <Avatar name={a.name} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold">{a.name}</div>
-                <div className="truncate text-xs text-fg-dim">{a.username ? `@${a.username}` : a.email}</div>
-              </div>
-              <button className="btn-primary px-3 py-2 text-xs" onClick={() => act(Events.ACCOUNT_UPDATE, { id: a.id, role: 'guest' }, `${a.name} теперь гость`)}>
-                <UserCheck size={14} /> Пустить
-              </button>
-              <button className="icon-btn h-9 w-9 hover:text-bad" title="Отклонить" onClick={() => act(Events.ACCOUNT_DELETE, { id: a.id }, 'Заявка отклонена')}>
-                <UserX size={16} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-5">
-        <div className="label mb-1">Пользователи · {others.length}</div>
-        {others.map((a) => {
-          const self = a.id === me?.id;
-          return (
-            <div key={a.id} className="flex items-center gap-3 border-t border-white/5 py-2.5 first:border-0">
-              <Avatar name={a.name} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-semibold">{a.name}</span>
-                  {self && <span className="text-[11px] text-fg-dim">(вы)</span>}
-                </div>
-                <div className="truncate text-xs text-fg-dim">
-                  {[a.username && `@${a.username}`, a.email].filter(Boolean).join(' · ')}
-                  {a.lastSeenAt ? ` · был ${timeAgo(a.lastSeenAt)}` : ''}
-                </div>
-              </div>
-              {self ? (
-                <RoleChip role={a.role} />
-              ) : (
-                <>
-                  <select
-                    className="rounded-xl border border-white/10 bg-ink-750 px-2 py-1.5 text-xs font-semibold"
-                    value={a.role === 'owner' ? 'owner' : 'guest'}
-                    onChange={(e) => void act(Events.ACCOUNT_UPDATE, { id: a.id, role: e.target.value })}
-                  >
-                    <option value="guest">Гость</option>
-                    <option value="owner">Владелец</option>
-                  </select>
-                  <button
-                    className={cx('icon-btn h-9 w-9', confirmDelete === a.id ? 'text-bad' : 'hover:text-bad')}
-                    title={confirmDelete === a.id ? 'Нажмите ещё раз' : 'Удалить'}
-                    onClick={() => {
-                      if (confirmDelete !== a.id) return setConfirmDelete(a.id);
-                      setConfirmDelete(null);
-                      void act(Events.ACCOUNT_DELETE, { id: a.id }, 'Пользователь удалён');
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-5">
-        <div className="label mb-2">Приглашения по Google</div>
-        <form
-          className="flex gap-2"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!email.trim()) return;
-            const r = await act(Events.GUESTS_UPDATE, { add: [email.trim()] }, 'Приглашение добавлено');
-            if (r.ok) setEmail('');
-          }}
-        >
-          <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@gmail.com" />
-          <button className="btn-soft" disabled={!email.trim()}>
-            <UserPlus size={18} />
-          </button>
-        </form>
-        <div className="mt-2 flex flex-col">
-          {!admin?.guests.length && <p className="py-1 text-xs text-fg-dim">Владелец Google-адреса из списка входит сразу, без одобрения.</p>}
-          {admin?.guests.map((g) => (
-            <div key={g.email} className="flex items-center gap-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-sm">{g.name ? `${g.name} · ${g.email}` : g.email}</span>
-              <button className="icon-btn h-8 w-8 hover:text-bad" onClick={() => act(Events.GUESTS_UPDATE, { remove: [g.email] }, 'Приглашение удалено')}>
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </Section>
-  );
-}
-
-function Avatar({ name }: { name: string }) {
+export function Avatar({ name }: { name: string }) {
   return <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink-750 text-sm font-bold text-fg-muted">{(name || '?').charAt(0).toUpperCase()}</div>;
 }
 
-function timeAgo(ts: number): string {
+export function timeAgo(ts: number): string {
   const m = Math.round((Date.now() - ts) / 60000);
   if (m < 2) return 'только что';
   if (m < 60) return `${m} мин назад`;

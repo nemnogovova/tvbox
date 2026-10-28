@@ -13,8 +13,26 @@ export interface User {
   username?: string;
   name: string;
   picture?: string;
+  /** Role in the current home (owner / guest); 'device' for a TV */
   role: Role;
+  /** The home (one TV and its people) this session works with; null — not in any home yet */
+  homeId?: string | null;
+  homeName?: string;
+  /** Every home the account belongs to (to switch between them) */
+  homes?: HomeSummary[];
+  /** Administrator of the whole server (approves new accounts) */
+  admin?: boolean;
 }
+
+/** A home: one TV and the people who may use it. Homes on one server never see each other. */
+export interface HomeSummary {
+  id: string;
+  name: string;
+  role: 'owner' | 'guest';
+}
+
+/** Who may create an account on the server. */
+export type RegistrationMode = 'open' | 'approval' | 'closed';
 
 export type AccountRole = 'owner' | 'guest' | 'pending';
 
@@ -209,12 +227,42 @@ export interface GuestEntry {
 }
 
 export interface AdminState {
-  /** Google e-mails invited as guests */
+  /** Google e-mails invited to the current home */
   guests: GuestEntry[];
+  /** Members of the current home (+ accounts waiting for approval, for the server admin) — kept for TVBox ≤ 3.1 remotes */
   accounts: AccountSummary[];
   dictatorMode: boolean;
-  /** Anyone may request access with login/password (owner approves) */
+  /** Registration is not closed */
   registrationOpen: boolean;
+  /** The current home (for its owner) */
+  home?: HomeAdmin | null;
+  /** People of the current home */
+  members?: AccountSummary[];
+  /** Server administration (only for the server admin) */
+  server?: ServerAdmin | null;
+}
+
+export interface HomeAdmin {
+  id: string;
+  name: string;
+  /** Invitation code: whoever opens /join/<code> joins as a guest */
+  inviteCode: string;
+  inviteUrl: string;
+  tvName?: string;
+}
+
+export interface ServerAdmin {
+  registration: RegistrationMode;
+  /** Accounts waiting for approval */
+  pending: AccountSummary[];
+  accounts: (AccountSummary & { admin?: boolean; homes: string[] })[];
+  homes: { id: string; name: string; owners: string[]; members: number; tvName?: string; tvOnline: boolean; createdAt: number }[];
+}
+
+/** Public info about an invitation (shown before signing in). */
+export interface InviteInfo {
+  homeName: string;
+  ownerName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +416,8 @@ export interface AuthPayload {
   deviceToken?: string;
   /** App version of the connecting client (TV reports it) */
   version?: string;
+  /** Invitation code to a home (signing in with Google from an invitation link) */
+  invite?: string;
 }
 
 export interface AuthResult {
@@ -407,6 +457,8 @@ export interface LinkDonePayload {
 
 /** Snapshot sent to a remote right after it authenticates. */
 export interface SyncPayload {
+  /** The session's user (role and home may change while connected) */
+  user?: User;
   presence: PresenceInfo;
   player: PlayerState;
   catalog: MediaItem[];

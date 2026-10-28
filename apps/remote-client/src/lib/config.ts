@@ -59,6 +59,8 @@ export interface PublicConfig {
   oauthConfigured: boolean;
   publicUrl: string;
   turn: boolean;
+  /** Who may create an account (TVBox ≥ 3.2 servers) */
+  registration?: 'open' | 'approval' | 'closed';
 }
 
 export async function fetchPublicConfig(serverUrl: string): Promise<PublicConfig | null> {

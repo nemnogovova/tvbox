@@ -120,15 +120,20 @@ const ERROR_TEXT: Record<string, string> = {
   not_found: 'Не найдено',
   offline: 'Нет связи с сервером',
   expired: 'Код устарел — попросите новый',
-  owner_only: 'Подключить телевизор может только владелец',
+  owner_only: 'Подключить телевизор можно только в свой дом',
+  no_home: 'Сначала подключите телевизор или войдите в дом по приглашению',
+  invite_invalid: 'Приглашение недействительно — попросите новую ссылку',
+  last_owner: 'Вы единственный владелец — передайте дом кому-то или удалите его',
+  self: 'С собой так нельзя',
+  bad_name: 'Укажите название',
   device_gone: 'Устройство уже отключилось',
   invalid_email: 'Некорректный email',
   invalid_credentials: 'Неверный логин или пароль',
-  pending_approval: 'Аккаунт ждёт одобрения владельца',
+  pending_approval: 'Аккаунт ждёт одобрения администратора сервера',
   username_taken: 'Такой логин уже занят',
   weak_password: 'Пароль слишком короткий — минимум 4 символа',
   bad_username: 'Логин: 3–32 символа, буквы, цифры, точка, дефис или _',
-  registration_closed: 'Регистрация закрыта владельцем',
+  registration_closed: 'Регистрация закрыта — нужна ссылка-приглашение',
   too_many_attempts: 'Слишком много попыток — подождите пару минут',
   wrong_password: 'Текущий пароль указан неверно',
   google_in_use: 'Этот Google-аккаунт уже привязан к другому пользователю',
@@ -207,6 +212,37 @@ export async function act<T = unknown>(event: string, data?: unknown, okMessage?
   return res;
 }
 
+function loadMusicSources(): void {
+  set({ musicSources: null });
+  if (get().user?.homeId === null) return set({ musicSources: [] });
+  void request<MusicSource[]>(Events.MUSIC_SOURCES).then((r) => set({ musicSources: r.ok ? r.data || [] : [] }));
+}
+
+// ---------------------------------------------------------------------------
+// Homes (one TV and its people)
+// ---------------------------------------------------------------------------
+
+/** Invitation from a /join/<code> link, used when signing in / registering from it. */
+let pendingInvite: string | null = null;
+export function setPendingInvite(code: string | null): void {
+  pendingInvite = code ? code.trim().toUpperCase() : null;
+}
+
+export async function switchHome(homeId: string): Promise<boolean> {
+  const r = await request(Events.HOME_SWITCH, { homeId });
+  if (!r.ok) toast(errorText(r.error), 'error');
+  return r.ok;
+}
+
+export async function joinHome(code: string): Promise<{ ok: boolean; name?: string }> {
+  const r = await request<{ homeId: string; name: string }>(Events.HOME_JOIN, { code: code.trim().toUpperCase() });
+  if (!r.ok) {
+    toast(errorText(r.error), 'error');
+    return { ok: false };
+  }
+  return { ok: true, name: r.data?.name };
+}
+
 function authenticate(): void {
   const token = getToken();
   if (!socket || !token) {
@@ -216,7 +252,8 @@ function authenticate(): void {
   socket.emit(Events.AUTH, { token }, (res: AuthResult) => {
     if (res?.ok && res.user) {
       set({ auth: 'authed', user: res.user, authError: null, deniedEmail: null, kickedReason: null });
-      void request<MusicSource[]>(Events.MUSIC_SOURCES).then((r) => r.ok && set({ musicSources: r.data || [] }));
+      pendingInvite = null;
+      loadMusicSources();
       if (getPref('bgControl', true)) void startBackgroundControl(get().serverUrl, token);
     } else {
       if (res?.error && res.error !== 'missing_credentials') setToken(null);
@@ -255,8 +292,10 @@ export function connect(): void {
   });
   s.on('connect_error', () => set({ conn: 'offline' }));
 
-  s.on(Events.SYNC, (p: SyncPayload) =>
+  s.on(Events.SYNC, (p: SyncPayload) => {
+    const prev = get().user;
     set({
+      ...(p.user ? { user: p.user } : {}),
       presence: p.presence,
       player: p.player || { ...EMPTY_PLAYER_STATE },
       playerReceivedAt: Date.now(),
@@ -266,8 +305,10 @@ export function connect(): void {
       admin: p.admin,
       apps: p.apps ?? null,
       youtube: p.youtube ?? null,
-    }),
-  );
+    });
+    // another home: its TV has its own music servers
+    if (prev && p.user && p.user.homeId !== prev.homeId) loadMusicSources();
+  });
   s.on(Events.APPS_STATE, (a: AppsState) => set({ apps: a }));
   s.on(Events.YOUTUBE_STATE, (y: YoutubeState) => set({ youtube: y }));
   s.on(Events.PRESENCE, (p: PresenceInfo) => set({ presence: p }));
@@ -279,10 +320,11 @@ export function connect(): void {
   s.on(Events.TORRENTS, (t: TorrentInfo[]) => set({ torrents: t }));
   s.on(Events.IDLE, (i: IdleSettings) => set({ idle: i }));
   s.on(Events.ADMIN, (a: AdminState) => {
-    const was = new Set((get().admin?.accounts || []).filter((x) => x.role === 'pending').map((x) => x.id));
-    const fresh = (a?.accounts || []).filter((x) => x.role === 'pending' && !was.has(x.id));
-    // somebody asked for access while the owner had the remote open
-    if (isOwner(get()) && fresh.length) toast(`${fresh[0].name || fresh[0].username || 'Новый пользователь'} ждёт одобрения — Ещё → Настройки`, 'info', 6000);
+    const pendingOf = (x: AdminState | null) => x?.server?.pending || [];
+    const was = new Set(pendingOf(get().admin).map((x) => x.id));
+    const fresh = pendingOf(a).filter((x) => !was.has(x.id));
+    // somebody asked for an account while the server admin had the remote open
+    if (get().user?.admin && fresh.length) toast(`${fresh[0].name || fresh[0].username || 'Новый пользователь'} ждёт одобрения — Ещё → Настройки`, 'info', 6000);
     set({ admin: a });
   });
   s.on(Events.MUSIC_SOURCES_CHANGED, (m: MusicSource[]) => set({ musicSources: m }));
@@ -291,7 +333,7 @@ export function connect(): void {
   s.on(Events.KICKED, (e: { reason: string }) => {
     if (e?.reason === 'removed') {
       setToken(null);
-      set({ auth: 'anon', user: null, kickedReason: 'Владелец отозвал ваш доступ' });
+      set({ auth: 'anon', user: null, kickedReason: 'Доступ к аккаунту закрыт администратором сервера' });
     }
   });
   s.on(Events.LINK_DONE, (p: { token: string }) => {
@@ -362,7 +404,7 @@ export async function signInWithGoogle(credential: string): Promise<void> {
     const res = await fetch(`${get().serverUrl}/api/auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credential }),
+      body: JSON.stringify({ credential, ...(pendingInvite ? { invite: pendingInvite } : {}) }),
     });
     const body = (await res.json()) as { ok: boolean; token?: string; error?: string; email?: string };
     if (!body.ok || !body.token) {
@@ -382,7 +424,7 @@ async function postAuth(path: string, body: unknown): Promise<boolean> {
     const res = await fetch(`${get().serverUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...(body as object), ...(pendingInvite ? { invite: pendingInvite } : {}) }),
     });
     const out = (await res.json()) as { ok: boolean; token?: string; error?: string };
     if (!out.ok || !out.token) {
